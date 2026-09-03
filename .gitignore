@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+#ENvironment variables
+.env
+.env.*
+!.env.example
+
+#Logs
+*.log
+
+#OS files
+.DS_Store
+Thumbs.db
+
+#IDE / editor
+.vscode/
+.idea/
+
+#Test / coverage output
+coverage/
+
+#Temporary files
+*.tmp
+*.temp*.tsbuildinfo
