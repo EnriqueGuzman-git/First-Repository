@@ -4,12 +4,15 @@ node_modules/
 # Build output
 dist/
 
-#ENvironment variables
+# Local durable history
+data/
+
+# ENvironment variables
 .env
 .env.*
 !.env.example
 
-#Logs
+# Logs
 *.log
 
 #OS files
@@ -25,4 +28,7 @@ coverage/
 
 #Temporary files
 *.tmp
-*.temp*.tsbuildinfo
+*.tsbuildinfo
+
+# Playwright test artifacts
+test-results/
