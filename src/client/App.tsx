@@ -8,7 +8,7 @@
  *   /?room=XXXX  — Auto-join room XXXX on mount
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useGame } from './hooks/useGame';
 import { ConnectionPill, ReconnectingOverlay } from './components/ConnectionStatus';
 import { Board } from './components/Board';
@@ -34,16 +34,23 @@ export default function App() {
   } = useGame();
 
   const { phase, wsState, latency } = state;
+  const autoJoinedRoomRef = useRef<string | null>(null);
 
   // ── Auto-join from URL param ───────────────────────────────────────────────
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const room   = params.get('room');
-    if (room && state.wsState === 'AUTHENTICATED' && phase === 'LOBBY') {
+    const room = params.get('room');
+
+    if (
+      room &&
+      wsState === 'AUTHENTICATED' &&
+      phase === 'LOBBY' &&
+      autoJoinedRoomRef.current !== room
+    ) {
+      autoJoinedRoomRef.current = room;
       joinRoom(room);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.wsState]); // only runs when auth state changes
+  }, [joinRoom, phase, wsState]);
 
   // ── Derived display data ──────────────────────────────────────────────────
   const pendingIdx = pendingCellIndices(state.confirmedBoard, state.optimisticBoard);
@@ -80,7 +87,6 @@ export default function App() {
               mySymbol={state.mySymbol}
               currentTurn={state.confirmedTurn}
               result={state.gameResult}
-              winningLine={state.winningLine}
               movePending={movePending}
               opponentConnection={state.opponentConnection}
               latencyMs={latency.smoothRttMs}

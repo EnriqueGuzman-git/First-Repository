@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     reporter: ['verbose'],
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**'],
 
     /* Integration tests spin up real servers — give them more time */
     testTimeout: 15_000,

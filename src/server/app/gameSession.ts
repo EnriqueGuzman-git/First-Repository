@@ -18,10 +18,12 @@
 
 import type {
   RoomId, GameId, PlayerId, PlayerSymbol,
-  BoardSnapshot, GameResult, MoveRecord, GameStats, CommandId,
+  BoardSnapshot, GameResult, MoveRecord, GameStats, GameSummary, CommandId,
 } from '../../shared/protocol/types.js';
 import { RECONNECT_WINDOW_MS, REMATCH_TIMEOUT_MS } from '../../shared/protocol/types.js';
 import type { PlayerInfo } from '../../shared/protocol/types.js';
+import type { AnyRoomEvent } from '../../shared/protocol/events.js';
+import { EVENT_BUFFER_SIZE } from '../../shared/protocol/types.js';
 
 import type { GameState } from '../game/engine.js';
 import {
@@ -38,7 +40,8 @@ import {
 import { generateGameId } from '../utils/idGenerator.js';
 import { logger } from '../utils/logger.js';
 import type { RoomRecord, PlayerSlot } from './roomStore.js';
-import { getSlotByPlayerId, getSymbolForPlayer, getOpponentSlot } from './roomStore.js';
+import { getSymbolForPlayer, getOpponentSlot } from './roomStore.js';
+import type { CompletedGameRecord, HistoryRepository } from './historyRepository.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -77,6 +80,8 @@ export class GameSession {
   private gameState:      GameState | null = null;
   private sessionSeq:     number = 0;
   private rematch:        RematchProposal | null = null;
+  private readonly completedGames: CompletedGameRecord[];
+  private readonly replayBuffer: AnyRoomEvent[] = [];
 
   /** reconnect timers keyed by playerId */
   private reconnectTimers = new Map<PlayerId, ReturnType<typeof setTimeout>>();
@@ -84,15 +89,23 @@ export class GameSession {
   constructor(
     private readonly roomId:   RoomId,
     private readonly send:     SendFn,
-  ) {}
+    private readonly historyRepository: HistoryRepository,
+  ) {
+    this.completedGames = [...historyRepository.loadCompletedGames(roomId)];
+  }
 
   // ── Sequence counter ──────────────────────────────────────────────────────
 
   private nextSeq(): number { return ++this.sessionSeq; }
 
-  private resetSeq(): void { this.sessionSeq = 0; }
+  private resetSeq(): void {
+    this.sessionSeq = 0;
+    this.replayBuffer.length = 0;
+  }
 
   get currentSeq(): number { return this.sessionSeq; }
+
+  allocateSequence(): number { return this.nextSeq(); }
 
   // ── Game lifecycle ────────────────────────────────────────────────────────
 
@@ -136,7 +149,7 @@ export class GameSession {
     );
 
     // Broadcast to all players — use playerX.playerId as the "from" anchor
-    this.send('broadcast', room.playerX.playerId, event as unknown as WireEvent);
+    this.emit('broadcast', room.playerX.playerId, event as unknown as WireEvent);
 
     logger.info('Game started', { roomId: this.roomId, gameId, firstTurn });
   }
@@ -153,17 +166,22 @@ export class GameSession {
     gameId: GameId,
     position: { row: number; col: number },
     commandId: CommandId,
-  ): void {
+  ): WireEvent | null {
     const state = this.gameState;
     if (!state) {
       this.sendError(room, playerId, 'GAME_NOT_ACTIVE', commandId);
-      return;
+      return null;
     }
 
     // Anti-replay: gameId must match the running game
     if (state.gameId !== gameId) {
       this.sendError(room, playerId, 'GAME_ID_MISMATCH', commandId);
-      return;
+      return null;
+    }
+
+    if (state.status !== 'ACTIVE') {
+      this.sendError(room, playerId, 'GAME_NOT_ACTIVE', commandId);
+      return null;
     }
 
     const result = applyMove(state, {
@@ -186,15 +204,15 @@ export class GameSession {
         this.nextSeq(),
         commandId,
       );
-      this.send('player', playerId, rejEvent as unknown as WireEvent);
-      return;
+      this.emit('player', playerId, rejEvent as unknown as WireEvent);
+      return rejEvent as unknown as WireEvent;
     }
 
     this.gameState = result.newState;
 
     // Find the MOVE_MADE engine event
     const moveEv = result.events.find((e) => e.kind === 'MOVE_MADE');
-    if (!moveEv || moveEv.kind !== 'MOVE_MADE') return;
+    if (!moveEv || moveEv.kind !== 'MOVE_MADE') return null;
 
     const ackSeq = this.nextSeq();
 
@@ -205,7 +223,7 @@ export class GameSession {
       moveEv.sequenceInGame, moveEv.board,
       moveEv.nextTurn, ackSeq, commandId,
     );
-    this.send('player', playerId, ack as unknown as WireEvent);
+    this.emit('player', playerId, ack as unknown as WireEvent);
 
     // MOVE_BROADCAST → everyone else
     const broadcast = makeMoveBroadcast(
@@ -215,13 +233,15 @@ export class GameSession {
       moveEv.sequenceInGame, moveEv.board,
       moveEv.nextTurn, this.nextSeq(),
     );
-    this.send('others', playerId, broadcast as unknown as WireEvent);
+    this.emit('others', playerId, broadcast as unknown as WireEvent);
 
     // Check for game end
     const endEv = result.events.find((e) => e.kind === 'GAME_ENDED');
     if (endEv && endEv.kind === 'GAME_ENDED') {
       this.emitGameFinished(room, endEv.result, endEv.finalBoard, endEv.moveHistory, playerId);
     }
+
+    return ack as unknown as WireEvent;
   }
 
   // ── Forfeit / abandon ─────────────────────────────────────────────────────
@@ -274,7 +294,23 @@ export class GameSession {
       this.nextSeq(),
     );
 
-    this.send('broadcast', fromPlayerId, event as unknown as WireEvent);
+    const completedGame: CompletedGameRecord = {
+      gameId: this.gameState.gameId as GameId,
+      outcome: result.outcome,
+      winner: result.winner,
+      moveCount: moveHistory.length,
+      startedAt: this.gameState.createdAt,
+      endedAt: result.endedAt,
+      finalBoard,
+      result,
+      moveHistory: [...moveHistory],
+    };
+    if (!this.completedGames.some((game) => game.gameId === completedGame.gameId)) {
+      this.completedGames.unshift(completedGame);
+      this.historyRepository.saveCompletedGame(this.roomId, completedGame);
+    }
+
+    this.emit('broadcast', fromPlayerId, event as unknown as WireEvent);
 
     logger.info('Game finished', {
       roomId: this.roomId,
@@ -312,7 +348,7 @@ export class GameSession {
     const event = makeRematchRequested(
       this.roomId, gameId, symbol, expiresAt, this.nextSeq(),
     );
-    this.send('broadcast', playerId, event as unknown as WireEvent);
+    this.emit('broadcast', playerId, event as unknown as WireEvent);
     return true;
   }
 
@@ -370,7 +406,7 @@ export class GameSession {
     if (!anyPlayer) return;
 
     const event = makeRematchExpired(this.roomId, gameId, this.nextSeq());
-    this.send('broadcast', anyPlayer, event as unknown as WireEvent);
+    this.emit('broadcast', anyPlayer, event as unknown as WireEvent);
   }
 
   // ── Reconnection window ───────────────────────────────────────────────────
@@ -392,7 +428,7 @@ export class GameSession {
       const event = makeOpponentDisconnected(
         this.roomId, symbol, deadline, this.nextSeq(),
       );
-      this.send('player', opponent.playerId, event as unknown as WireEvent);
+      this.emit('player', opponent.playerId, event as unknown as WireEvent);
     }
 
     const timer = setTimeout(() => {
@@ -423,7 +459,7 @@ export class GameSession {
 
     if (symbol && opponent?.connected) {
       const event = makeOpponentReconnected(this.roomId, symbol, this.nextSeq());
-      this.send('player', opponent.playerId, event as unknown as WireEvent);
+      this.emit('player', opponent.playerId, event as unknown as WireEvent);
     }
   }
 
@@ -435,9 +471,39 @@ export class GameSession {
     return this.gameState ? this.gameState.gameId as GameId : null;
   }
 
+  getReplayEvents(fromSeq: number): ReadonlyArray<AnyRoomEvent> | null {
+    if (fromSeq > this.currentSeq) return [];
+
+    const expectedCount = this.currentSeq - fromSeq + 1;
+    const events = this.replayBuffer.filter((event) => event.sessionSeq >= fromSeq);
+    return events.length === expectedCount ? events : null;
+  }
+
+  get history(): ReadonlyArray<GameSummary> {
+    return this.completedGames;
+  }
+
+  get completedGameRecords(): ReadonlyArray<CompletedGameRecord> {
+    return this.completedGames;
+  }
+
   get rematchPending(): boolean { return this.rematch !== null; }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  private emit(
+    target: 'player' | 'broadcast' | 'others',
+    playerId: PlayerId,
+    event: WireEvent,
+  ): void {
+    if (typeof event['sessionSeq'] === 'number' && event['type'] !== 'ERROR') {
+      this.replayBuffer.push(event as unknown as AnyRoomEvent);
+      if (this.replayBuffer.length > EVENT_BUFFER_SIZE) {
+        this.replayBuffer.splice(0, this.replayBuffer.length - EVENT_BUFFER_SIZE);
+      }
+    }
+    this.send(target, playerId, event);
+  }
 
   private sendError(
     _room: RoomRecord,
@@ -449,7 +515,7 @@ export class GameSession {
       code as import('../../shared/protocol/errors.js').ErrorCode,
       code, true, correlationId,
     );
-    this.send('player', playerId, event as unknown as WireEvent);
+    this.emit('player', playerId, event as unknown as WireEvent);
   }
 
   private buildPlayers(room: RoomRecord): { X: PlayerInfo; O: PlayerInfo } {

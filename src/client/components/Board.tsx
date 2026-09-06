@@ -15,7 +15,7 @@
 
 import React from 'react';
 import type { BoardSnapshot, BoardIndex } from '@ttt/shared/protocol';
-import { positionToIndex } from '@ttt/shared/protocol';
+import { getCell, positionToIndex } from '@ttt/shared/protocol';
 import { Cell } from './Cell';
 
 interface BoardProps {
@@ -48,7 +48,7 @@ export function Board({
         <div key={row} className="board__row" role="row">
           {([0, 1, 2] as BoardIndex[]).map((col) => {
             const idx       = positionToIndex(row, col);
-            const value     = board[idx];
+            const value     = getCell(board, row, col);
             const isPending = pendingIndices.has(idx);
             const isWinning = winningIndices.has(idx);
             // A cell is clickable when:

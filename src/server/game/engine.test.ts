@@ -297,13 +297,6 @@ describe('applyMove — valid moves', () => {
     // 0[X] [O] [X]
     // 1[O] [X] [O]
     // 2[O] [X] [O]
-    const moves: [string, number, number][] = [
-      [PLAYER_X, 0, 0], [PLAYER_O, 0, 1],
-      [PLAYER_X, 0, 2], [PLAYER_O, 1, 0],
-      [PLAYER_X, 1, 1], [PLAYER_O, 1, 2],
-      [PLAYER_O, 2, 0], // wait — O can't move if it's X's turn
-      // Adjust to a known draw sequence:
-    ];
     // Use the known draw sequence from the draw test below instead
     expect(true).toBe(true); // placeholder — draw tested separately
   });
@@ -457,7 +450,9 @@ describe('win detection — all 8 winning lines', () => {
       expect(finalState.result?.winner).toBe('X');
       expect(finalState.result?.winningLine).not.toBeNull();
       // Verify the detected line matches the expected line type and positions
-      const detectedLine = finalState.result?.winningLine!;
+      const detectedLine = finalState.result?.winningLine;
+      expect(detectedLine).not.toBeNull();
+      if (!detectedLine) return;
       expect(detectedLine.type).toBe(line.type);
       expect(detectedLine.positions).toEqual(line.positions);
     });

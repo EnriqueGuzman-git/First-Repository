@@ -17,7 +17,6 @@ interface GameStatusProps {
   mySymbol:           PlayerSymbol | null;
   currentTurn:        PlayerSymbol;
   result:             GameResult | null;
-  winningLine:        WinningLine | null;
   movePending:        boolean;
   opponentConnection: OpponentConnectionEvent;
   latencyMs:          number | null;
@@ -28,7 +27,6 @@ export function GameStatus({
   mySymbol,
   currentTurn,
   result,
-  winningLine,
   movePending,
   opponentConnection,
   latencyMs,

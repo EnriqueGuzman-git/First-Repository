@@ -278,13 +278,13 @@ export class WsClient {
     // ── Sequence-gap detection for room-scoped events ─────────────────────
     if ('sessionSeq' in event && typeof event.sessionSeq === 'number') {
       const seq = event.sessionSeq;
-      // GAME_STARTED always resets the counter to 1
-      if (event.type === 'GAME_STARTED') {
+      // GAME_STARTED and STATE_SYNC establish a new authoritative sequence.
+      if (event.type === 'GAME_STARTED' || event.type === 'STATE_SYNC') {
         this.lastSeq = seq;
       } else if (seq > this.lastSeq + 1) {
-        // Gap detected — request sync before advancing
+        // Gap detected — request a snapshot/replay before advancing. The
+        // sync response owns the authoritative sequence after recovery.
         this.callbacks.onSequenceGap(this.lastSeq + 1);
-        this.lastSeq = seq; // advance anyway; store will handle replay
       } else if (seq === this.lastSeq + 1) {
         this.lastSeq = seq;
       }
@@ -293,6 +293,10 @@ export class WsClient {
 
     // Deliver to caller
     this.callbacks.onEvent(event);
+
+    // Replay dispatch may process GAME_STARTED and reset the transport-side
+    // counter while applying the payload. Restore the sync head afterwards.
+    if (event.type === 'STATE_SYNC') this.lastSeq = event.sessionSeq;
   }
 
   // ── Retry ──────────────────────────────────────────────────────────────────

@@ -107,7 +107,7 @@ class TestClient {
   /** Wait for the next message of a specific type. */
   async nextOfType(type: string, timeoutMs = 3000): Promise<AnyObject> {
     const deadline = Date.now() + timeoutMs;
-    while (true) {
+    for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error(`Timeout waiting for ${type}`);
       const msg = await this.next(remaining);
@@ -155,8 +155,12 @@ function joinRoomCmd(sessionToken: string, roomId: string): AnyObject {
   return makeEnvelope(CommandType.JOIN_ROOM, { sessionToken, roomId, playerName: null });
 }
 
-function playerReadyCmd(sessionToken: string, roomId: string): AnyObject {
-  return makeEnvelope(CommandType.PLAYER_READY, { sessionToken, roomId });
+function playerReadyCmd(sessionToken: string, roomId: string, commandId?: string): AnyObject {
+  return makeEnvelope(CommandType.PLAYER_READY, {
+    sessionToken,
+    roomId,
+    ...(commandId ? { commandId } : {}),
+  });
 }
 
 function makeMoveCmd(
@@ -196,6 +200,10 @@ function declineRematchCmd(sessionToken: string, roomId: string, gameId: string)
   return makeEnvelope(CommandType.DECLINE_REMATCH, { sessionToken, roomId, gameId });
 }
 
+function syncRequestCmd(sessionToken: string, roomId: string, fromSeq: number): AnyObject {
+  return makeEnvelope(CommandType.SYNC_REQUEST, { sessionToken, roomId, fromSeq });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test setup / teardown
 // ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +215,7 @@ type ServerHandle = {
 };
 
 async function startServer(): Promise<ServerHandle> {
-  const { httpServer, close } = buildServer();
+  const { httpServer, close } = buildServer({ historyFilePath: ':memory:' });
 
   await new Promise<void>((resolve) => {
     httpServer.listen(0, '127.0.0.1', resolve);
@@ -341,6 +349,30 @@ describe('Integration: WebSocket protocol', () => {
       c2.close();
     });
 
+    it('closing an older tab does not disconnect a newer tab', async () => {
+      const roomId = await createRoom(server.apiUrl);
+      const { client: olderTab, sessionToken } = await connectAndAuth(server.url);
+      const { client: newerTab } = await connectAndAuth(server.url, sessionToken);
+
+      olderTab.send(joinRoomCmd(sessionToken, roomId));
+      await olderTab.nextOfType(EventType.ROOM_JOINED);
+
+      newerTab.send(joinRoomCmd(sessionToken, roomId));
+      await newerTab.nextOfType(EventType.ROOM_JOINED);
+
+      olderTab.close();
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      const { client: opponent, sessionToken: opponentToken } = await connectAndAuth(server.url);
+      opponent.send(joinRoomCmd(opponentToken, roomId));
+      const joined = await newerTab.nextOfType(EventType.PLAYER_JOINED);
+
+      expect(joined['symbol']).toBe('O');
+
+      newerTab.close();
+      opponent.close();
+    });
+
     it('command before AUTH returns NOT_AUTHENTICATED', async () => {
       const client = new TestClient(server.url);
       await client.waitOpen();
@@ -432,7 +464,7 @@ describe('Integration: WebSocket protocol', () => {
     });
 
     it('second player gets symbol O and first player gets PLAYER_JOINED', async () => {
-      const { p1, p2, p2Token: p2t } = await setupRoom(server.url, server.apiUrl);
+      const { p1, p2 } = await setupRoom(server.url, server.apiUrl);
       // p2's ROOM_JOINED is already consumed in setupRoom
       // Verify symbol assignments from the setup helper's data
       // (The room joined events were consumed — we check gameSession start)
@@ -443,13 +475,15 @@ describe('Integration: WebSocket protocol', () => {
     });
 
     it('third player cannot join a full room', async () => {
-      const { roomId } = await setupRoom(server.url, server.apiUrl);
+      const { p1, p2, roomId } = await setupRoom(server.url, server.apiUrl);
       const { client: p3, sessionToken: p3t } = await connectAndAuth(server.url);
 
       p3.send(joinRoomCmd(p3t, roomId));
       const err = await p3.nextOfType(EventType.ERROR);
       expect(err['code']).toBe('ROOM_FULL');
       p3.close();
+      p1.close();
+      p2.close();
     });
 
     it('joining non-existent room returns ROOM_NOT_FOUND', async () => {
@@ -458,6 +492,24 @@ describe('Integration: WebSocket protocol', () => {
       const err = await client.nextOfType(EventType.ERROR);
       expect(err['code']).toBe('ROOM_NOT_FOUND');
       client.close();
+    });
+
+    it('duplicate LEAVE_ROOM replays ROOM_LEFT without a second transition', async () => {
+      const { p1, p1Token, p2, roomId } = await setupRoom(server.url, server.apiUrl);
+      const command = leaveRoomCmd(p1Token, roomId);
+
+      p1.send(command);
+      const first = await p1.nextOfType(EventType.ROOM_LEFT);
+      await p2.nextOfType(EventType.PLAYER_LEFT);
+
+      p1.send(command);
+      const second = await p1.nextOfType(EventType.ROOM_LEFT);
+
+      expect(second['correlationId']).toBe(command['commandId']);
+      expect(second['roomId']).toBe(first['roomId']);
+
+      p1.close();
+      p2.close();
     });
   });
 
@@ -489,6 +541,31 @@ describe('Integration: WebSocket protocol', () => {
       expect(board).toHaveLength(9);
       expect(board.every((c) => c === '')).toBe(true);
       p1.close(); p2.close();
+    });
+
+    it('duplicate PLAYER_READY replays the same acknowledgement', async () => {
+      const { p1, p1Token, p2, p2Token, roomId } =
+        await setupRoom(server.url, server.apiUrl);
+      const commandId = randomUUID();
+      const command = playerReadyCmd(p1Token, roomId, commandId);
+
+      p1.send(command);
+      const first = await p1.nextOfType(EventType.PLAYER_READY_ACK);
+
+      p1.send(command);
+      const second = await p1.nextOfType(EventType.PLAYER_READY_ACK);
+
+      expect(second['correlationId']).toBe(commandId);
+      expect(second['readyPlayers']).toEqual(first['readyPlayers']);
+
+      p2.send(playerReadyCmd(p2Token, roomId));
+      await Promise.all([
+        p1.nextOfType(EventType.GAME_STARTED),
+        p2.nextOfType(EventType.GAME_STARTED),
+      ]);
+
+      p1.close();
+      p2.close();
     });
   });
 
@@ -553,7 +630,7 @@ describe('Integration: WebSocket protocol', () => {
 
       // Need to send a move with row=3 — but the guard in guards.ts checks BoardIndex
       // so isMakeMoveCommand would fail. We craft a raw message bypassing the guard.
-      const { gameId } = await startGame(p1, p1Token, p2, p2Token, roomId);
+      await startGame(p1, p1Token, p2, p2Token, roomId);
 
       // craft move with valid UUID positions but row=3 won't pass isMakeMoveCommand
       // instead test an already-validated path: use GAME_ID_MISMATCH instead
@@ -581,6 +658,7 @@ describe('Integration: WebSocket protocol', () => {
       // Board state must be identical — move applied exactly once
       expect(ack1['board']).toEqual(ack2['board']);
       expect(ack1['sequenceInGame']).toBe(ack2['sequenceInGame']);
+      expect(ack2['correlationId']).toBe(cmdId);
 
       p1.close(); p2.close();
     });
@@ -765,7 +843,53 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 9. Rematch ─────────────────────────────────────────────────────────────
+  // ── 9. State synchronization ─────────────────────────────────────────────
+
+  describe('State synchronization', () => {
+    it('SYNC_REQUEST replays buffered room events when the range is available', async () => {
+      const { p1, p1Token, p2, p2Token, roomId } =
+        await setupRoom(server.url, server.apiUrl);
+      const { gameId } = await startGame(p1, p1Token, p2, p2Token, roomId);
+
+      p1.send(makeMoveCmd(p1Token, roomId, gameId, 0, 0));
+      await p1.nextOfType(EventType.MOVE_ACK);
+      await p2.nextOfType(EventType.MOVE_BROADCAST);
+
+      p1.send(syncRequestCmd(p1Token, roomId, 1));
+      const sync = await p1.nextOfType(EventType.STATE_SYNC);
+      const replayEvents = sync['events'] as Array<{ type: string; sessionSeq: number }>;
+
+      expect(sync['mode']).toBe('REPLAY');
+      expect(sync['fromSeq']).toBe(1);
+      expect(sync['toSeq']).toBe(3);
+      expect(replayEvents.map((event) => event.type)).toEqual([
+        EventType.GAME_STARTED,
+        EventType.MOVE_ACK,
+        EventType.MOVE_BROADCAST,
+      ]);
+      expect(replayEvents.map((event) => event.sessionSeq)).toEqual([1, 2, 3]);
+
+      p1.close();
+      p2.close();
+    });
+
+    it('SYNC_REQUEST returns the current authoritative snapshot', async () => {
+      const { p1, p1Token, p2, roomId } = await setupRoom(server.url, server.apiUrl);
+
+      p1.send(syncRequestCmd(p1Token, roomId, 1));
+      const sync = await p1.nextOfType(EventType.STATE_SYNC);
+
+      expect(sync['mode']).toBe('SNAPSHOT');
+      expect(sync['roomId']).toBe(roomId);
+      expect(typeof sync['sessionSeq']).toBe('number');
+      expect(sync['roomState']).toEqual(expect.objectContaining({ roomId }));
+
+      p1.close();
+      p2.close();
+    });
+  });
+
+  // ── 10. Rematch ────────────────────────────────────────────────────────────
 
   describe('Rematch', () => {
     async function finishGame(
@@ -799,7 +923,7 @@ describe('Integration: WebSocket protocol', () => {
 
       // p1 requests rematch
       p1.send(requestRematchCmd(p1Token, roomId, gameId));
-      const [req1, req2] = await Promise.all([
+      const [req1] = await Promise.all([
         p1.nextOfType(EventType.REMATCH_REQUESTED),
         p2.nextOfType(EventType.REMATCH_REQUESTED),
       ]);
@@ -816,6 +940,15 @@ describe('Integration: WebSocket protocol', () => {
       expect(gs1['gameId']).not.toBe(gameId); // new game
       expect(gs1['firstTurn']).toBe('O');       // swapped
       expect(gs1['gameId']).toBe(gs2['gameId']);
+
+      const historyResponse = await fetch(`${server.apiUrl}/rooms/${roomId}/history`);
+      const history = await historyResponse.json() as {
+        games: Array<{ gameId: string; moveHistory: unknown[] }>;
+      };
+      expect(historyResponse.status).toBe(200);
+      expect(history.games).toHaveLength(1);
+      expect(history.games[0]?.gameId).toBe(gameId);
+      expect(history.games[0]?.moveHistory).toHaveLength(5);
 
       p1.close(); p2.close();
     });
@@ -875,6 +1008,34 @@ describe('Integration: WebSocket protocol', () => {
   // ── 11. HTTP endpoints ─────────────────────────────────────────────────────
 
   describe('HTTP endpoints', () => {
+    it('grants CORS only to configured browser origins', async () => {
+      const denied = await fetch(server.apiUrl.replace('/api', '/health'), {
+        headers: { Origin: 'https://evil.example' },
+      });
+      expect(denied.headers.get('access-control-allow-origin')).toBeNull();
+
+      const allowed = await fetch(server.apiUrl.replace('/api', '/health'), {
+        headers: { Origin: 'http://localhost:3000' },
+      });
+      expect(allowed.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    });
+
+    it('rejects WebSocket upgrades from unconfigured browser origins', async () => {
+      const rejected = await new Promise<boolean>((resolve) => {
+        const socket = new WebSocket(server.url, WS_SUBPROTOCOL, {
+          origin: 'https://evil.example',
+        });
+        socket.once('open', () => {
+          socket.close();
+          resolve(false);
+        });
+        socket.once('unexpected-response', () => resolve(true));
+        socket.once('error', () => resolve(true));
+      });
+
+      expect(rejected).toBe(true);
+    });
+
     it('GET /health returns 200 with status healthy', async () => {
       const res  = await fetch(server.apiUrl.replace('/api', '/health'));
       const body = await res.json() as { status: string };
@@ -888,6 +1049,15 @@ describe('Integration: WebSocket protocol', () => {
       expect(res.status).toBe(200);
       expect(typeof body['rooms']).toBe('number');
       expect(typeof body['connections']).toBe('number');
+      expect(body['protocol']).toEqual(expect.objectContaining({
+        commands: expect.any(Object),
+        errors: expect.any(Object),
+        commandDurationMs: expect.objectContaining({
+          count: expect.any(Number),
+          total: expect.any(Number),
+          max: expect.any(Number),
+        }),
+      }));
     });
 
     it('GET /api/rooms/:id returns room state', async () => {

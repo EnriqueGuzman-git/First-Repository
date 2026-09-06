@@ -25,6 +25,11 @@ import { ConnectionManager } from './connectionManager.js';
 import { MessageRouter } from './messageRouter.js';
 import type { ServerContext } from '../app/commandHandler.js';
 import { logger } from '../utils/logger.js';
+import { isOriginAllowed } from '../security/originPolicy.js';
+
+export type WsServerOptions = {
+  readonly allowedOrigins: ReadonlySet<string>;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // createWsServer
@@ -38,6 +43,7 @@ import { logger } from '../utils/logger.js';
 export function createWsServer(
   httpServer: HttpServer,
   ctx: ServerContext,
+  options: WsServerOptions,
 ): { close: () => Promise<void>; connectionManager: ConnectionManager } {
   const cm     = new ConnectionManager();
   const router = new MessageRouter(cm, ctx);
@@ -58,7 +64,6 @@ export function createWsServer(
 
   // ── Idle timeout callback ─────────────────────────────────────────────────
   cm.onIdleTimeout = (connectionId) => {
-    const code  = 'INTERNAL_ERROR'; // no specific idle code — use generic
     cm.close(connectionId, 4006, 'Connection idle timeout');
   };
 
@@ -71,6 +76,14 @@ export function createWsServer(
     handleProtocols: (protocols: Set<string>, _req: IncomingMessage) => {
       if (protocols.has(WS_SUBPROTOCOL)) return WS_SUBPROTOCOL;
       return false; // causes ws to send 400
+    },
+
+    verifyClient: (info, done) => {
+      if (isOriginAllowed(info.origin || undefined, options.allowedOrigins)) {
+        done(true);
+        return;
+      }
+      done(false, 403, 'Origin not allowed');
     },
 
     // Per-message deflate disabled — adds latency for small JSON payloads

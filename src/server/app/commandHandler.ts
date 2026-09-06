@@ -15,14 +15,14 @@
 
 import type {
   RoomId, PlayerId, SessionToken, CommandId,
-  PlayerSymbol, RoomStateSnapshot, GameSummary, GameId,
+  PlayerSymbol, RoomStateSnapshot, GameId,
 } from '../../shared/protocol/types.js';
 import { MAX_PLAYER_NAME_LENGTH } from '../../shared/protocol/types.js';
 
 import type {
   AuthCommand, JoinRoomCommand, LeaveRoomCommand, PlayerReadyCommand,
   MakeMoveCommand, RequestRematchCommand, AcceptRematchCommand,
-  DeclineRematchCommand, PingCommand, ReconnectCommand,
+  DeclineRematchCommand, PingCommand, ReconnectCommand, SyncRequestCommand,
 } from '../../shared/protocol/commands.js';
 import type { ErrorCode } from '../../shared/protocol/errors.js';
 import { ERROR_META } from '../../shared/protocol/errors.js';
@@ -30,16 +30,18 @@ import { ERROR_META } from '../../shared/protocol/errors.js';
 import type { SessionStore } from './sessionStore.js';
 import type { RoomStore } from './roomStore.js';
 import {
-  roomStatus, playerCount, getSlotByPlayerId, getSymbolForPlayer,
+  roomStatus, playerCount, getSlotByPlayerId, getSymbolForPlayer, getOpponentSlot,
 } from './roomStore.js';
 import { GameSession } from './gameSession.js';
-import type { SendFn } from './gameSession.js';
+import type { SendFn, WireEvent } from './gameSession.js';
+import type { HistoryRepository } from './historyRepository.js';
 import {
   makeAuthAck, makePong, makeRoomJoined, makePlayerJoined,
   makeRoomLeft, makePlayerLeft, makePlayerReadyAck, makeOpponentReady,
-  makeReconnectAck, makeStateSyncSnapshot, makeErrorEvent,
+  makeReconnectAck, makeStateSyncReplay, makeStateSyncSnapshot, makeErrorEvent,
 } from '../utils/eventFactory.js';
 import { logger } from '../utils/logger.js';
+import type { Metrics } from '../utils/metrics.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Server context injected into every handler
@@ -50,6 +52,8 @@ export type ServerContext = {
   rooms:        RoomStore;
   /** gameSessions keyed by roomId */
   gameSessions: Map<RoomId, GameSession>;
+  historyRepository: HistoryRepository;
+  metrics:       Metrics;
   serverVersion: string;
 };
 
@@ -106,7 +110,6 @@ function buildRoomSnapshot(
   const room    = ctx.rooms.getRoom(roomId);
   const session = ctx.gameSessions.get(roomId);
   const state   = session?.state ?? null;
-  const now     = Date.now();
 
   const toInfo = (playerId: PlayerId, symbol: PlayerSymbol, name: string | null, connected: boolean, lastSeenAt: number) => ({
     playerId, symbol, name,
@@ -131,7 +134,7 @@ function buildRoomSnapshot(
       startedAt:   state.createdAt,
       result:      state.result,
     } : null,
-    gameHistory: [] as ReadonlyArray<GameSummary>, // Phase 1: no DB
+    gameHistory: session?.history ?? [],
   };
 }
 
@@ -224,7 +227,7 @@ export function handleJoinRoom(
   const existingSlot = getSlotByPlayerId(room, session.playerId);
   if (existingSlot) {
     const snapshot  = buildRoomSnapshot(ctx, cmd.roomId);
-    const seqPivot  = ctx.gameSessions.get(cmd.roomId)?.currentSeq ?? 1;
+    const seqPivot  = ctx.gameSessions.get(cmd.roomId)?.allocateSequence() ?? 1;
     const event     = makeRoomJoined(cmd.roomId, session.playerId, existingSlot.symbol, snapshot, seqPivot, correlationId);
     ctx.sessions.recordCommand(correlationId, event);
     return ok(sendToConn(connectionId, event as unknown as Record<string, unknown>));
@@ -241,13 +244,14 @@ export function handleJoinRoom(
   ctx.sessions.setRoom(sessionToken, cmd.roomId);
   ctx.rooms.touch(cmd.roomId);
 
-  const seqCounter = ctx.gameSessions.get(cmd.roomId)?.currentSeq ?? 1;
-
   // Ensure a GameSession exists for this room
   if (!ctx.gameSessions.has(cmd.roomId)) {
     const sendFn = makeSendFn(ctx, cmd.roomId);
-    ctx.gameSessions.set(cmd.roomId, new GameSession(cmd.roomId, sendFn));
+    ctx.gameSessions.set(cmd.roomId, new GameSession(cmd.roomId, sendFn, ctx.historyRepository));
   }
+
+  const gameSession = ctx.gameSessions.get(cmd.roomId)!;
+  const seqCounter = gameSession.allocateSequence();
 
   const snapshot = buildRoomSnapshot(ctx, cmd.roomId);
   const joinedEv = makeRoomJoined(cmd.roomId, session.playerId, symbol, snapshot, seqCounter, correlationId);
@@ -263,7 +267,7 @@ export function handleJoinRoom(
     const otherSlot = symbol === 'X' ? room.playerO : room.playerX;
     if (otherSlot) {
       const gs   = ctx.gameSessions.get(cmd.roomId)!;
-      const pjEv = makePlayerJoined(cmd.roomId, session.playerId, symbol, name, countAfter, gs.currentSeq + 1);
+      const pjEv = makePlayerJoined(cmd.roomId, session.playerId, symbol, name, countAfter, gs.allocateSequence());
       deliveries.push({ target: 'broadcast', id: otherSlot.playerId, event: pjEv as unknown as Record<string, unknown> });
     }
   }
@@ -286,6 +290,8 @@ export function handleLeaveRoom(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  const cached = ctx.sessions.getCachedResult(correlationId);
+  if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
 
@@ -302,16 +308,30 @@ export function handleLeaveRoom(
   }
 
   // ROOM_LEFT → leaving player
-  const seqNow = gs?.currentSeq ?? 1;
+  const seqNow = gs?.allocateSequence() ?? 1;
   const leftEv = makeRoomLeft(cmd.roomId, seqNow, correlationId);
   deliveries.push(sendToConn(connectionId, leftEv as unknown as Record<string, unknown>));
+  ctx.sessions.recordCommand(correlationId, leftEv);
 
   // PLAYER_LEFT → remaining players
   const reason = gs?.state?.status === 'FINISHED' && gs.state.result?.reason === 'PLAYER_FORFEITED'
     ? 'FORFEIT' as const
     : 'VOLUNTARY' as const;
-  const plEv = makePlayerLeft(cmd.roomId, session.playerId, slot.symbol, reason, seqNow + 1);
-  deliveries.push({ target: 'others', id: session.playerId, event: plEv as unknown as Record<string, unknown> });
+  const plEv = makePlayerLeft(
+    cmd.roomId,
+    session.playerId,
+    slot.symbol,
+    reason,
+    gs?.allocateSequence() ?? seqNow + 1,
+  );
+  const opponentSlot = getOpponentSlot(room, session.playerId);
+  if (opponentSlot) {
+    deliveries.push({
+      target: 'broadcast',
+      id: opponentSlot.playerId,
+      event: plEv as unknown as Record<string, unknown>,
+    });
+  }
 
   ctx.rooms.removePlayer(room, session.playerId);
   ctx.sessions.setRoom(sessionToken, null);
@@ -334,6 +354,9 @@ export function handlePlayerReady(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  const cached = ctx.sessions.getCachedResult(correlationId);
+  if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
+
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
   if (playerCount(room) < 2) return ok(errorDelivery(connectionId, 'NOT_IN_ROOM', correlationId));
@@ -344,20 +367,21 @@ export function handlePlayerReady(
   let gs = ctx.gameSessions.get(cmd.roomId);
   if (!gs) {
     const sendFn = makeSendFn(ctx, cmd.roomId);
-    gs = new GameSession(cmd.roomId, sendFn);
+    gs = new GameSession(cmd.roomId, sendFn, ctx.historyRepository);
     ctx.gameSessions.set(cmd.roomId, gs);
   }
 
   // Idempotency: already ready
   if (room.readySymbols.has(symbol)) {
     const ack = makePlayerReadyAck(cmd.roomId, Array.from(room.readySymbols), gs.currentSeq, correlationId);
+    ctx.sessions.recordCommand(correlationId, ack);
     return ok(sendToConn(connectionId, ack as unknown as Record<string, unknown>));
   }
 
   ctx.rooms.markReady(room, symbol);
   const readyList = Array.from(room.readySymbols);
 
-  const ack = makePlayerReadyAck(cmd.roomId, readyList, gs.currentSeq + 1, correlationId);
+  const ack = makePlayerReadyAck(cmd.roomId, readyList, gs.allocateSequence(), correlationId);
   const deliveries: Delivery[] = [
     sendToConn(connectionId, ack as unknown as Record<string, unknown>),
   ];
@@ -365,7 +389,7 @@ export function handlePlayerReady(
   // Notify opponent
   const oppSlot = symbol === 'X' ? room.playerO : room.playerX;
   if (oppSlot) {
-    const oppEv = makeOpponentReady(cmd.roomId, symbol, readyList, gs.currentSeq + 2);
+    const oppEv = makeOpponentReady(cmd.roomId, symbol, readyList, gs.allocateSequence());
     deliveries.push({ target: 'broadcast', id: oppSlot.playerId, event: oppEv as unknown as Record<string, unknown> });
   }
 
@@ -379,6 +403,7 @@ export function handlePlayerReady(
     gs.startGame(room, ft);
   }
 
+  ctx.sessions.recordCommand(correlationId, ack);
   return { deliveries };
 }
 
@@ -406,8 +431,10 @@ export function handleMakeMove(
   const gs = ctx.gameSessions.get(cmd.roomId);
   if (!gs) return ok(errorDelivery(connectionId, 'GAME_NOT_ACTIVE', correlationId));
 
-  // Delegate to GameSession — it will call sendFn directly for broadcast events
-  gs.handleMove(room, session.playerId, cmd.gameId, cmd.position, correlationId);
+  // GameSession sends live events and returns the mover's exact response so a
+  // retry can receive the same acknowledgement or rejection.
+  const response = gs.handleMove(room, session.playerId, cmd.gameId, cmd.position, correlationId);
+  if (response) ctx.sessions.recordCommand(correlationId, response);
 
   // The move result is delivered via sendFn callbacks in GameSession.
   // The HandlerResult here is empty — no additional deliveries from this level.
@@ -428,6 +455,8 @@ export function handleRequestRematch(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  if (ctx.sessions.getCachedResult(correlationId)) return { deliveries: [] };
+
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
 
@@ -436,7 +465,9 @@ export function handleRequestRematch(
 
   if (gs.rematchPending) return ok(errorDelivery(connectionId, 'REMATCH_PENDING', correlationId));
 
-  gs.handleRematchRequest(room, session.playerId, cmd.gameId);
+  if (gs.handleRematchRequest(room, session.playerId, cmd.gameId)) {
+    ctx.sessions.recordCommand(correlationId, { processed: true });
+  }
   return { deliveries: [] };
 }
 
@@ -450,6 +481,8 @@ export function handleAcceptRematch(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  if (ctx.sessions.getCachedResult(correlationId)) return { deliveries: [] };
+
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
 
@@ -457,13 +490,15 @@ export function handleAcceptRematch(
   if (!gs) return ok(errorDelivery(connectionId, 'GAME_NOT_ACTIVE', correlationId));
   if (!gs.rematchPending) return ok(errorDelivery(connectionId, 'REMATCH_NOT_REQUESTED', correlationId));
 
-  gs.handleRematchAccept(room, session.playerId, cmd.gameId);
+  if (gs.handleRematchAccept(room, session.playerId, cmd.gameId)) {
+    ctx.sessions.recordCommand(correlationId, { processed: true });
+  }
   return { deliveries: [] };
 }
 
 export function handleDeclineRematch(
   connectionId: string,
-  cmd: import('../../shared/protocol/commands.js').DeclineRematchCommand,
+  cmd: DeclineRematchCommand,
   ctx: ServerContext,
   sessionToken: SessionToken,
 ): HandlerResult {
@@ -471,13 +506,17 @@ export function handleDeclineRematch(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  if (ctx.sessions.getCachedResult(correlationId)) return { deliveries: [] };
+
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
 
   const gs = ctx.gameSessions.get(cmd.roomId);
   if (!gs || !gs.rematchPending) return ok(errorDelivery(connectionId, 'REMATCH_NOT_REQUESTED', correlationId));
 
-  gs.handleRematchDecline(room, session.playerId, cmd.gameId);
+  if (gs.handleRematchDecline(room, session.playerId, cmd.gameId)) {
+    ctx.sessions.recordCommand(correlationId, { processed: true });
+  }
   return { deliveries: [] };
 }
 
@@ -507,6 +546,9 @@ export function handleReconnect(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
+  const cached = ctx.sessions.getCachedResult(correlationId);
+  if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
+
   const room = ctx.rooms.getRoom(cmd.roomId);
   if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
 
@@ -525,13 +567,14 @@ export function handleReconnect(
   // Notify opponent
   gs?.notifyOpponentReconnected(room, session.playerId);
 
-  const seqNow   = gs?.currentSeq ?? 1;
+  const seqNow   = gs?.allocateSequence() ?? 1;
   const snapshot = buildRoomSnapshot(ctx, cmd.roomId);
 
   const ack = makeReconnectAck(cmd.roomId, session.playerId, slot.symbol, snapshot, seqNow, correlationId);
   const deliveries: Delivery[] = [
     sendToConn(connectionId, ack as unknown as Record<string, unknown>),
   ];
+  ctx.sessions.recordCommand(correlationId, ack);
 
   // If client has missed events, send a SNAPSHOT sync
   if (cmd.lastReceivedSeq < seqNow) {
@@ -541,6 +584,53 @@ export function handleReconnect(
 
   logger.info('Player reconnected', { roomId: cmd.roomId, playerId: session.playerId });
   return { deliveries };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYNC_REQUEST
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function handleSyncRequest(
+  connectionId: string,
+  cmd: SyncRequestCommand,
+  ctx: ServerContext,
+  sessionToken: SessionToken,
+): HandlerResult {
+  const correlationId = cmd.commandId;
+  const session = ctx.sessions.getSession(sessionToken);
+  if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
+
+  const cached = ctx.sessions.getCachedResult(correlationId);
+  if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
+
+  const room = ctx.rooms.getRoom(cmd.roomId);
+  if (!room) return ok(errorDelivery(connectionId, 'ROOM_NOT_FOUND', correlationId));
+  if (!getSlotByPlayerId(room, session.playerId)) {
+    return ok(errorDelivery(connectionId, 'NOT_IN_ROOM', correlationId));
+  }
+
+  const sessionState = ctx.gameSessions.get(cmd.roomId);
+  const replay = sessionState?.getReplayEvents(cmd.fromSeq) ?? null;
+  if (replay !== null) {
+    const sync = makeStateSyncReplay(
+      cmd.roomId,
+      cmd.fromSeq,
+      sessionState?.currentSeq ?? cmd.fromSeq - 1,
+      replay,
+    );
+    ctx.sessions.recordCommand(correlationId, sync);
+    return ok(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
+  }
+
+  const snapshot = buildRoomSnapshot(ctx, cmd.roomId);
+  const sync = makeStateSyncSnapshot(
+    cmd.roomId,
+    snapshot,
+    sessionState?.currentSeq ?? 0,
+  );
+
+  ctx.sessions.recordCommand(correlationId, sync);
+  return ok(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,8 +663,33 @@ export function handleDisconnect(
 // We use a late-binding registry so GameSession has no import of ConnectionManager.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Registry: playerId → connectionId. Populated by ConnectionManager. */
-export const playerConnectionRegistry = new Map<PlayerId, string>();
+/** Registry: playerId → active connection IDs. */
+export const playerConnectionRegistry = new Map<PlayerId, Set<string>>();
+
+export function registerPlayerConnection(playerId: PlayerId, connectionId: string): void {
+  const connections = playerConnectionRegistry.get(playerId) ?? new Set<string>();
+  connections.add(connectionId);
+  playerConnectionRegistry.set(playerId, connections);
+}
+
+export function unregisterPlayerConnection(playerId: PlayerId, connectionId: string): boolean {
+  const connections = playerConnectionRegistry.get(playerId);
+  if (!connections) return false;
+
+  connections.delete(connectionId);
+  if (connections.size === 0) playerConnectionRegistry.delete(playerId);
+  return connections.size > 0;
+}
+
+export function getPlayerConnectionIds(playerId: PlayerId): ReadonlySet<string> {
+  return playerConnectionRegistry.get(playerId) ?? new Set<string>();
+}
+
+function sendToPlayerConnections(playerId: PlayerId, event: WireEvent): void {
+  for (const connectionId of playerConnectionRegistry.get(playerId) ?? []) {
+    sendToConnectionId(connectionId, event);
+  }
+}
 
 function makeSendFn(ctx: ServerContext, roomId: RoomId): SendFn {
   return (target, playerId, event) => {
@@ -582,16 +697,14 @@ function makeSendFn(ctx: ServerContext, roomId: RoomId): SendFn {
     if (!room) return;
 
     if (target === 'player') {
-      const connId = playerConnectionRegistry.get(playerId);
-      if (connId) sendToConnectionId(connId, event);
+      sendToPlayerConnections(playerId, event);
       return;
     }
 
     if (target === 'broadcast') {
       [room.playerX, room.playerO].forEach((slot) => {
         if (slot?.connected) {
-          const connId = playerConnectionRegistry.get(slot.playerId);
-          if (connId) sendToConnectionId(connId, event);
+          sendToPlayerConnections(slot.playerId, event);
         }
       });
       return;
@@ -600,8 +713,7 @@ function makeSendFn(ctx: ServerContext, roomId: RoomId): SendFn {
     if (target === 'others') {
       [room.playerX, room.playerO].forEach((slot) => {
         if (slot && slot.playerId !== playerId && slot.connected) {
-          const connId = playerConnectionRegistry.get(slot.playerId);
-          if (connId) sendToConnectionId(connId, event);
+          sendToPlayerConnections(slot.playerId, event);
         }
       });
     }

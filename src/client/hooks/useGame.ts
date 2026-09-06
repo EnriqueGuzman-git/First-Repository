@@ -21,7 +21,7 @@
 
 import { useReducer, useCallback, useMemo } from 'react';
 
-import type { RoomId, GameId, SessionToken } from '@ttt/shared/protocol';
+import type { RoomId, SessionToken } from '@ttt/shared/protocol';
 import { brand } from '@ttt/shared/protocol';
 
 import {

@@ -67,24 +67,8 @@ export function createRoomsRouter(ctx: ServerContext): Router {
       return;
     }
 
-    // Phase 1: history is in-memory only; completed games are stored on GameSession
-    const gs    = ctx.gameSessions.get(room.roomId);
-    const state = gs?.state;
-
-    const games = [];
-    if (state?.status === 'FINISHED' && state.result) {
-      games.push({
-        gameId:      state.gameId,
-        outcome:     state.result.outcome,
-        winner:      state.result.winner,
-        moveCount:   state.moveHistory.length,
-        startedAt:   state.createdAt,
-        endedAt:     state.endedAt,
-        moveHistory: state.moveHistory,
-      });
-    }
-
-    res.json({ roomId: room.roomId, games });
+    const gs = ctx.gameSessions.get(room.roomId);
+    res.json({ roomId: room.roomId, games: gs?.completedGameRecords ?? [] });
   });
 
   return router;
@@ -120,6 +104,7 @@ export function createSystemRouter(
         heapTotalMB: (mem.heapTotal / 1024 / 1024).toFixed(2),
         rssMB:       (mem.rss       / 1024 / 1024).toFixed(2),
       },
+      protocol: ctx.metrics.snapshot(),
       uptime: process.uptime(),
     });
   });

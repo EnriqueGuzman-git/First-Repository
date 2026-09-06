@@ -791,12 +791,16 @@ export function verifyInvariants(state: GameState): InvariantViolation[] {
       push('WIN_HAS_WINNING_LINE', 'Game outcome is WIN but winningLine is null');
     }
 
-    // 7. Non-WIN requires winner = null
-    if (result.outcome !== 'WIN' && result.winner !== null) {
+    // 7. DRAW has no winner; FORFEIT and ABANDONED award the opponent.
+    if (result.outcome === 'DRAW' && result.winner !== null) {
       push(
         'NON_WIN_HAS_NO_WINNER',
         `Game outcome is ${result.outcome} but winner is ${result.winner as string}`,
       );
+    }
+
+    if ((result.outcome === 'FORFEIT' || result.outcome === 'ABANDONED') && result.winner === null) {
+      push('TERMINAL_FORFEIT_HAS_WINNER', `Game outcome is ${result.outcome} but winner is null`);
     }
 
     // 8. WIN requires a non-null winner

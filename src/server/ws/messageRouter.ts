@@ -25,11 +25,10 @@ import type { ServerContext } from '../app/commandHandler.js';
 import {
   handleAuth, handleJoinRoom, handleLeaveRoom, handlePlayerReady,
   handleMakeMove, handleRequestRematch, handleAcceptRematch, handleDeclineRematch,
-  handlePing, handleReconnect, handleDisconnect,
-  playerConnectionRegistry,
+  handlePing, handleReconnect, handleSyncRequest, handleDisconnect,
+  registerPlayerConnection, unregisterPlayerConnection, getPlayerConnectionIds,
 } from '../app/commandHandler.js';
 import type { Delivery } from '../app/commandHandler.js';
-import { logger } from '../utils/logger.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MessageRouter
@@ -72,6 +71,7 @@ export class MessageRouter {
           : 'MALFORMED_MESSAGE';
 
       const meta  = ERROR_META[code];
+      this.ctx.metrics.recordError(code);
       const event = makeErrorEvent(code, meta.summary, meta.recoverable);
       if (meta.closesConnection) {
         this.cm.close(connectionId, 4001, code, event as unknown as Record<string, unknown>);
@@ -82,6 +82,8 @@ export class MessageRouter {
     }
 
     const cmd = parseResult.command;
+    const commandStartedAt = Date.now();
+    this.ctx.metrics.recordCommand(cmd.type);
 
     // ── 5. Auth guard (except AUTH and PING) ───────────────────────────────
     const rec = this.cm.getRecord(connectionId);
@@ -95,6 +97,14 @@ export class MessageRouter {
     }
 
     const sessionToken: SessionToken | null = rec.sessionToken;
+
+    if (rec.authenticated && sessionToken) {
+      if (!this.ctx.sessions.getSession(sessionToken)) {
+        this.sendError(connectionId, 'SESSION_EXPIRED', cmd.commandId as string);
+        return;
+      }
+      this.ctx.sessions.touch(sessionToken);
+    }
 
     // ── 6. Route ───────────────────────────────────────────────────────────
     let result;
@@ -110,7 +120,7 @@ export class MessageRouter {
             const playerId = ev['playerId'] as PlayerId;
             this.cm.authenticate(connectionId, token, playerId);
             // Register in the player→connection map used by GameSession.sendFn
-            playerConnectionRegistry.set(playerId, connectionId);
+            registerPlayerConnection(playerId, connectionId);
           }
         }
         break;
@@ -152,14 +162,12 @@ export class MessageRouter {
         result = handleReconnect(connectionId, cmd, this.ctx, sessionToken!);
         // Re-register player→connection after reconnect
         if (rec.playerId) {
-          playerConnectionRegistry.set(rec.playerId, connectionId);
+          registerPlayerConnection(rec.playerId, connectionId);
         }
         break;
 
       case CommandType.SYNC_REQUEST:
-        // Handled server-side as a snapshot sync — delegate to RECONNECT-like logic
-        logger.debug('SYNC_REQUEST received', { connectionId });
-        result = { deliveries: [] as Delivery[] };
+        result = handleSyncRequest(connectionId, cmd, this.ctx, sessionToken!);
         break;
 
       default: {
@@ -172,6 +180,7 @@ export class MessageRouter {
 
     // ── 7. Deliver results ─────────────────────────────────────────────────
     this.deliver(result.deliveries);
+    this.ctx.metrics.recordCommandDuration(Date.now() - commandStartedAt);
 
     if (result.closeCode !== undefined) {
       this.cm.close(connectionId, result.closeCode, result.closeReason ?? '');
@@ -190,7 +199,11 @@ export class MessageRouter {
 
     // Remove from player→connection registry
     if (rec.playerId) {
-      playerConnectionRegistry.delete(rec.playerId);
+      const hasRemainingConnection = unregisterPlayerConnection(rec.playerId, connectionId);
+      if (hasRemainingConnection) {
+        this.cm.unregister(connectionId);
+        return;
+      }
     }
 
     handleDisconnect(rec.sessionToken, this.ctx);
@@ -208,11 +221,13 @@ export class MessageRouter {
         // The room-level broadcast is driven by GameSession.sendFn; the handler
         // only returns 'broadcast' for presence events (PLAYER_JOINED etc.)
         // In that case, d.id is a playerId, and we find the connection via registry.
-        const connId = playerConnectionRegistry.get(brand<PlayerId>(d.id));
-        if (connId) this.cm.send(connId, d.event);
+        for (const connId of getPlayerConnectionIds(brand<PlayerId>(d.id))) {
+          this.cm.send(connId, d.event);
+        }
       } else if (d.target === 'others') {
-        const connId = playerConnectionRegistry.get(brand<PlayerId>(d.id));
-        if (connId) this.cm.send(connId, d.event);
+        for (const connId of getPlayerConnectionIds(brand<PlayerId>(d.id))) {
+          this.cm.send(connId, d.event);
+        }
       }
     }
   }
@@ -223,9 +238,10 @@ export class MessageRouter {
     correlationId?: string,
   ): void {
     const meta  = ERROR_META[code];
+    this.ctx.metrics.recordError(code);
     const event = makeErrorEvent(
       code, meta.summary, meta.recoverable,
-      correlationId ? brand(correlationId) : undefined,
+      correlationId ? brand<import('../../shared/protocol/types.js').CommandId>(correlationId) : undefined,
     );
     if (meta.closesConnection) {
       this.cm.close(connectionId, 4001, code, event as unknown as Record<string, unknown>);

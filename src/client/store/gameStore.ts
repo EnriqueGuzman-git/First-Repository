@@ -39,7 +39,6 @@ import type {
 import { EMPTY_BOARD } from '@ttt/shared/protocol';
 
 import type { WsState } from '../lib/wsClient';
-import { prevalidateMove } from '../lib/optimisticEngine';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types

@@ -11,7 +11,7 @@ import { useEffect, useRef, useCallback } from 'react';
 
 import type {
   AnyEvent, ErrorEvent,
-  RoomId, GameId, WinningLine, PlayerInfo,
+  WinningLine, PlayerInfo,
 } from '@ttt/shared/protocol';
 import { EventType } from '@ttt/shared/protocol';
 
@@ -94,8 +94,7 @@ export function useWebSocket(
       client.destroy();
       clientRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — config is stable, callbacks use stateRef
+  }, [config, dispatch]);
 
   return { sendRaw, client: clientRef.current };
 }
@@ -287,7 +286,11 @@ function dispatchEvent(
     }
 
     case EventType.STATE_SYNC: {
-      if (event.mode === 'SNAPSHOT') {
+      if (event.mode === 'REPLAY') {
+        for (const replayEvent of event.events) {
+          dispatchEvent(replayEvent, state, dispatch, client);
+        }
+      } else {
         const rs = event.roomState;
         const cg = rs.currentGame;
         dispatch({

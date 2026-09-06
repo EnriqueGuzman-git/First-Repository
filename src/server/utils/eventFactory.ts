@@ -34,8 +34,9 @@ import type {
   RematchRequestedEvent, RematchDeclinedEvent, RematchExpiredEvent,
   OpponentDisconnectedEvent, OpponentReconnectedEvent,
   ReconnectAckEvent,
-  StateSyncSnapshotEvent,
+  StateSyncReplayEvent, StateSyncSnapshotEvent,
 } from '../../shared/protocol/events.js';
+import type { AnyRoomEvent } from '../../shared/protocol/events.js';
 import type { ErrorEvent } from '../../shared/protocol/errors.js';
 import type { ErrorCode } from '../../shared/protocol/errors.js';
 
@@ -417,5 +418,20 @@ export function makeStateSyncSnapshot(
     ...roomBase(EventType.STATE_SYNC, roomId, sessionSeq),
     mode: 'SNAPSHOT',
     roomState,
+  };
+}
+
+export function makeStateSyncReplay(
+  roomId: RoomId,
+  fromSeq: number,
+  toSeq: number,
+  events: ReadonlyArray<AnyRoomEvent>,
+): StateSyncReplayEvent {
+  return {
+    ...roomBase(EventType.STATE_SYNC, roomId, toSeq),
+    mode: 'REPLAY',
+    fromSeq,
+    toSeq,
+    events,
   };
 }

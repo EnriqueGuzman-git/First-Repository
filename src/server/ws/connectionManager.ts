@@ -7,7 +7,7 @@
  *  2. Map connectionId ↔ SessionToken (set after AUTH succeeds).
  *  3. Map connectionId ↔ PlayerId  (set after AUTH succeeds, for GameSession callbacks).
  *  4. Send serialised events to a specific connection.
- *  5. Enforce per-connection rate limiting.
+ *  5. Enforce per-connection message rate limiting.
  *  6. Fire the AUTH timeout if AUTH is not received within AUTH_TIMEOUT_MS.
  *  7. Detect idle connections (no message for CONNECTION_IDLE_TIMEOUT_MS).
  *  8. Track connection metadata for observability.
@@ -33,7 +33,6 @@ import { logger } from '../utils/logger.js';
 
 const RATE_WINDOW_MS   = 10_000; // 10 seconds
 const RATE_MAX_MSGS    = 60;     // 60 messages per window  (§16 PROTOCOL.md)
-const RATE_MAX_MOVES   = 5;      // 5 MAKE_MOVE per second  (enforced in router)
 
 type RateBucket = {
   windowStart: number;

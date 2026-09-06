@@ -64,8 +64,6 @@ import type {
 
 import type {
   AnyEvent,
-  AnyRoomEvent,
-  AnyGlobalEvent,
   AuthAckEvent,
   PongEvent,
   RoomJoinedEvent,
@@ -222,7 +220,7 @@ export function isCommandEnvelope(v: unknown): v is CommandEnvelope {
  * plus sessionSeq and roomId). Used on the client to validate incoming
  * room-scoped events.
  */
-export function isEventEnvelope(v: unknown): v is EventEnvelope {
+export function isEventEnvelope(v: unknown): v is EventEnvelope & Record<string, unknown> {
   if (!isBaseEnvelope(v)) return false;
   // EventEnvelope adds sessionSeq and roomId to BaseEnvelope.
   const r = v as Record<string, unknown>;
@@ -237,7 +235,7 @@ export function isEventEnvelope(v: unknown): v is EventEnvelope {
  * Guards that the value satisfies GlobalEventEnvelope (base fields only —
  * no sessionSeq or roomId).
  */
-export function isGlobalEventEnvelope(v: unknown): v is GlobalEventEnvelope {
+export function isGlobalEventEnvelope(v: unknown): v is GlobalEventEnvelope & Record<string, unknown> {
   return isBaseEnvelope(v);
 }
 
@@ -644,12 +642,13 @@ export function isStateSyncEvent(v: unknown): v is StateSyncEvent {
 
 export function isErrorEvent(v: unknown): v is ErrorEvent {
   if (!isBaseEnvelope(v)) return false;
+  const r = v as Record<string, unknown>;
   return (
     v.type === EventType.ERROR &&
-    isString(v['code']) &&
-    (v['code'] as string) in ERROR_META &&
-    isString(v['detail']) &&
-    typeof v['recoverable'] === 'boolean'
+    isString(r['code']) &&
+    (r['code'] as string) in ERROR_META &&
+    isString(r['detail']) &&
+    typeof r['recoverable'] === 'boolean'
   );
 }
 
