@@ -1,4 +1,4 @@
-# Production-Grade Tic-Tac-Toe Game - Design Document
+# Production-Oriented Tic-Tac-Toe Game - Design Document
 
 ## Table of Contents
 1. [Product Requirements](#1-product-requirements)
@@ -2249,6 +2249,8 @@ pm2 restart tictactoe-server
 NODE_ENV=production
 PORT=8080
 DB_PATH=/var/lib/tictactoe/game.db
+# Current adapter: atomic JSON history file; replace with DB_PATH adapter later.
+HISTORY_FILE=/var/lib/tictactoe/history.json
 LOG_LEVEL=info
 CORS_ORIGIN=https://yourdomain.com
 WS_HEARTBEAT_INTERVAL=30000
