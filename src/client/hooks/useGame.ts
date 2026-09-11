@@ -1,22 +1,10 @@
 /**
- * @file useGame.ts
- * @description Primary React hook for game interactions.
+ * Primary React hook for game interactions, exposing a stable API to the UI.
  *
- * Exposes a stable API for UI components:
- *   makeMove(row, col)   — Optimistic update + send MAKE_MOVE
- *   playerReady()        — Send PLAYER_READY
- *   leaveRoom()          — Send LEAVE_ROOM + reset local state
- *   requestRematch()     — Send REQUEST_REMATCH
- *   acceptRematch()      — Send ACCEPT_REMATCH
- *   declineRematch()     — Send DECLINE_REMATCH
- *
- * Optimistic move flow:
- *  1. prevalidateMove() — local check, zero RTT
- *  2. If valid: dispatch MOVE_OPTIMISTIC (board updates instantly)
- *  3. Send MAKE_MOVE command to server
- *  4. Server responds:
- *     MOVE_ACK      → dispatch MOVE_ACK (reconcile, clear pending)
- *     MOVE_REJECTED → dispatch MOVE_REJECTED (roll back optimistic board)
+ * Optimistic move flow: prevalidateMove() locally (zero RTT); if valid,
+ * dispatch MOVE_OPTIMISTIC so the board updates instantly and send MAKE_MOVE.
+ * The server then replies MOVE_ACK (reconcile, clear pending) or MOVE_REJECTED
+ * (roll back the optimistic board).
  */
 
 import { useReducer, useCallback, useMemo } from 'react';
@@ -37,10 +25,6 @@ import {
 } from '../lib/commandBuilder';
 import type { WsClientConfig } from '../lib/wsClient';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Config (injected by App.tsx from environment)
-// ─────────────────────────────────────────────────────────────────────────────
-
 const WS_URL = (
   typeof window !== 'undefined'
     ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
@@ -52,21 +36,13 @@ const CLIENT_CONFIG: WsClientConfig = {
   clientVersion: '1.0.0',
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Hook
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function useGame(): GameApi {
   const [state, dispatch] = useReducer(gameReducer, INITIAL_STATE);
   const { sendRaw, client } = useWebSocket(CLIENT_CONFIG, state, dispatch);
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
-
   const token = useCallback((): SessionToken | null => {
     return client?.getSessionToken() ?? state.sessionToken;
   }, [client, state.sessionToken]);
-
-  // ── Actions ──────────────────────────────────────────────────────────────
 
   const joinRoom = useCallback((roomId: string) => {
     const t = token();
@@ -103,7 +79,6 @@ export function useGame(): GameApi {
 
     if (!t || !r || !g || !s) return;
 
-    // ── 1. Pre-validate locally ──────────────────────────────────────────
     const result = prevalidateMove(
       state.confirmedBoard,
       state.confirmedTurn,
@@ -114,11 +89,10 @@ export function useGame(): GameApi {
     );
 
     if (!result.valid) {
-      // Not a plausible move — do nothing (server would reject anyway)
+      // Not a plausible move — do nothing (server would reject anyway).
       return;
     }
 
-    // ── 2. Optimistic update ─────────────────────────────────────────────
     const commandId = newCommandId();
     dispatch({
       type:           'MOVE_OPTIMISTIC',
@@ -128,7 +102,6 @@ export function useGame(): GameApi {
       predictedBoard: result.predictedBoard,
     });
 
-    // ── 3. Send to server ────────────────────────────────────────────────
     const cmd = buildMakeMove(commandId, t, r, g, row, col);
     sendRaw(cmd as unknown as Record<string, unknown>);
   }, [state, sendRaw, token]);
@@ -160,8 +133,6 @@ export function useGame(): GameApi {
     sendRaw(cmd as unknown as Record<string, unknown>);
   }, [sendRaw, token, state.roomId, state.gameId]);
 
-  // ── Derived view data ─────────────────────────────────────────────────────
-
   const board         = useMemo(() => displayBoard(state),  [state]);
   const moveAllowed   = useMemo(() => canMove(state),       [state]);
   const movePending   = useMemo(() => hasPendingMove(state), [state]);
@@ -180,10 +151,6 @@ export function useGame(): GameApi {
     declineRematch,
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public type
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type GameApi = {
   state:         ClientState;

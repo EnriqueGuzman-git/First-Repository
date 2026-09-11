@@ -1,16 +1,6 @@
 /**
- * @file commandHandler.ts
- * @description Application-layer command handlers.
- *
- * Each handler receives a validated, typed command plus the server's shared
- * store instances, and returns a HandlerResult describing what events to send
- * to which connection.
- *
- * Architecture rules:
- *  - No WebSocket imports.
- *  - No direct send() calls — returns results that the transport layer acts on.
- *  - No business logic inside WebSocket message callbacks.
- *  - Idempotency is enforced here via SessionStore.getCachedResult.
+ * Application-layer command handlers: each takes a validated command plus the
+ * shared stores and returns a HandlerResult describing which events to deliver.
  */
 
 import type {
@@ -33,7 +23,7 @@ import {
   roomStatus, playerCount, getSlotByPlayerId, getSymbolForPlayer, getOpponentSlot,
 } from './roomStore.js';
 import { GameSession } from './gameSession.js';
-import type { SendFn, WireEvent } from './gameSession.js';
+import type { SendFn, WireEvent, OnPlayerLeftFn } from './gameSession.js';
 import type { HistoryRepository } from './historyRepository.js';
 import {
   makeAuthAck, makePong, makeRoomJoined, makePlayerJoined,
@@ -43,23 +33,14 @@ import {
 import { logger } from '../utils/logger.js';
 import type { Metrics } from '../utils/metrics.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Server context injected into every handler
-// ─────────────────────────────────────────────────────────────────────────────
-
 export type ServerContext = {
   sessions:     SessionStore;
   rooms:        RoomStore;
-  /** gameSessions keyed by roomId */
   gameSessions: Map<RoomId, GameSession>;
   historyRepository: HistoryRepository;
   metrics:       Metrics;
   serverVersion: string;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Handler result
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type Delivery = {
   target:   'connection' | 'broadcast' | 'others';
@@ -82,10 +63,6 @@ function ok(...deliveries: Delivery[]): HandlerResult {
 function sendToConn(connectionId: string, event: Record<string, unknown>): Delivery {
   return { target: 'connection', id: connectionId, event };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared utilities
-// ─────────────────────────────────────────────────────────────────────────────
 
 function errorDelivery(
   connectionId: string,
@@ -138,10 +115,6 @@ function buildRoomSnapshot(
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTH
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function handleAuth(
   connectionId: string,
   cmd: AuthCommand,
@@ -149,7 +122,6 @@ export function handleAuth(
 ): HandlerResult {
   const correlationId = cmd.commandId;
 
-  // Idempotency check
   const cached = ctx.sessions.getCachedResult(correlationId);
   if (cached) {
     return ok(sendToConn(connectionId, cached as Record<string, unknown>));
@@ -169,7 +141,6 @@ export function handleAuth(
 
   ctx.sessions.touch(session.sessionToken);
 
-  // Check for existing room
   let existingRoom: import('../../shared/protocol/events.js').AuthAckEvent['existingRoom'] = null;
   if (session.roomId) {
     const room    = ctx.rooms.getRoom(session.roomId);
@@ -196,10 +167,6 @@ export function handleAuth(
   return ok(sendToConn(connectionId, ack as unknown as Record<string, unknown>));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// JOIN_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function handleJoinRoom(
   connectionId: string,
   cmd: JoinRoomCommand,
@@ -211,11 +178,9 @@ export function handleJoinRoom(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
-  // Idempotency
   const cached = ctx.sessions.getCachedResult(correlationId);
   if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
 
-  // Already in a different room?
   if (session.roomId && session.roomId !== cmd.roomId) {
     return ok(errorDelivery(connectionId, 'ALREADY_IN_ROOM', correlationId));
   }
@@ -244,10 +209,10 @@ export function handleJoinRoom(
   ctx.sessions.setRoom(sessionToken, cmd.roomId);
   ctx.rooms.touch(cmd.roomId);
 
-  // Ensure a GameSession exists for this room
   if (!ctx.gameSessions.has(cmd.roomId)) {
-    const sendFn = makeSendFn(ctx, cmd.roomId);
-    ctx.gameSessions.set(cmd.roomId, new GameSession(cmd.roomId, sendFn, ctx.historyRepository));
+    const sendFn      = makeSendFn(ctx, cmd.roomId);
+    const onPlayerLeft = makeOnPlayerLeftFn(ctx, cmd.roomId);
+    ctx.gameSessions.set(cmd.roomId, new GameSession(cmd.roomId, sendFn, ctx.historyRepository, onPlayerLeft));
   }
 
   const gameSession = ctx.gameSessions.get(cmd.roomId)!;
@@ -261,7 +226,6 @@ export function handleJoinRoom(
     sendToConn(connectionId, joinedEv as unknown as Record<string, unknown>),
   ];
 
-  // Notify existing player
   const countAfter = playerCount(room);
   if (countAfter > 1) {
     const otherSlot = symbol === 'X' ? room.playerO : room.playerX;
@@ -275,10 +239,6 @@ export function handleJoinRoom(
   logger.info('Player joined room', { roomId: cmd.roomId, playerId: session.playerId, symbol });
   return { deliveries };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LEAVE_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function handleLeaveRoom(
   connectionId: string,
@@ -301,19 +261,17 @@ export function handleLeaveRoom(
   const gs     = ctx.gameSessions.get(cmd.roomId);
   const deliveries: Delivery[] = [];
 
-  // If game is active, forfeit first
+  // Forfeit an active game before the player leaves; GAME_FINISHED is broadcast
+  // via the sendFn callback, so no extra delivery is added here.
   if (gs?.state?.status === 'ACTIVE') {
     gs.handleForfeit(room, session.playerId);
-    // GAME_FINISHED is broadcast via the sendFn callback — no extra delivery here
   }
 
-  // ROOM_LEFT → leaving player
   const seqNow = gs?.allocateSequence() ?? 1;
   const leftEv = makeRoomLeft(cmd.roomId, seqNow, correlationId);
   deliveries.push(sendToConn(connectionId, leftEv as unknown as Record<string, unknown>));
   ctx.sessions.recordCommand(correlationId, leftEv);
 
-  // PLAYER_LEFT → remaining players
   const reason = gs?.state?.status === 'FINISHED' && gs.state.result?.reason === 'PLAYER_FORFEITED'
     ? 'FORFEIT' as const
     : 'VOLUNTARY' as const;
@@ -340,10 +298,6 @@ export function handleLeaveRoom(
   return { deliveries };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PLAYER_READY
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function handlePlayerReady(
   connectionId: string,
   cmd: PlayerReadyCommand,
@@ -366,12 +320,13 @@ export function handlePlayerReady(
 
   let gs = ctx.gameSessions.get(cmd.roomId);
   if (!gs) {
-    const sendFn = makeSendFn(ctx, cmd.roomId);
-    gs = new GameSession(cmd.roomId, sendFn, ctx.historyRepository);
+    const sendFn      = makeSendFn(ctx, cmd.roomId);
+    const onPlayerLeft = makeOnPlayerLeftFn(ctx, cmd.roomId);
+    gs = new GameSession(cmd.roomId, sendFn, ctx.historyRepository, onPlayerLeft);
     ctx.gameSessions.set(cmd.roomId, gs);
   }
 
-  // Idempotency: already ready
+  // Idempotent re-ready: replay the ack without re-marking.
   if (room.readySymbols.has(symbol)) {
     const ack = makePlayerReadyAck(cmd.roomId, Array.from(room.readySymbols), gs.currentSeq, correlationId);
     ctx.sessions.recordCommand(correlationId, ack);
@@ -386,14 +341,12 @@ export function handlePlayerReady(
     sendToConn(connectionId, ack as unknown as Record<string, unknown>),
   ];
 
-  // Notify opponent
   const oppSlot = symbol === 'X' ? room.playerO : room.playerX;
   if (oppSlot) {
     const oppEv = makeOpponentReady(cmd.roomId, symbol, readyList, gs.allocateSequence());
     deliveries.push({ target: 'broadcast', id: oppSlot.playerId, event: oppEv as unknown as Record<string, unknown> });
   }
 
-  // Auto-start when both ready
   if (ctx.rooms.bothReady(room)) {
     ctx.rooms.resetReady(room);
     // firstTurn: X for game 1; createRematch handles alternation for rematches
@@ -407,10 +360,6 @@ export function handlePlayerReady(
   return { deliveries };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MAKE_MOVE
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function handleMakeMove(
   connectionId: string,
   cmd: MakeMoveCommand,
@@ -421,7 +370,6 @@ export function handleMakeMove(
   const session = ctx.sessions.getSession(sessionToken);
   if (!session) return ok(errorDelivery(connectionId, 'NOT_AUTHENTICATED', correlationId));
 
-  // Idempotency
   const cached = ctx.sessions.getCachedResult(correlationId);
   if (cached) return ok(sendToConn(connectionId, cached as Record<string, unknown>));
 
@@ -440,10 +388,6 @@ export function handleMakeMove(
   // The HandlerResult here is empty — no additional deliveries from this level.
   return { deliveries: [] };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REMATCH
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function handleRequestRematch(
   connectionId: string,
@@ -520,10 +464,6 @@ export function handleDeclineRematch(
   return { deliveries: [] };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PING
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function handlePing(
   connectionId: string,
   cmd: PingCommand,
@@ -531,10 +471,6 @@ export function handlePing(
   const pong = makePong(cmd.clientTime, cmd.commandId);
   return ok(sendToConn(connectionId, pong as unknown as Record<string, unknown>));
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RECONNECT
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function handleReconnect(
   connectionId: string,
@@ -557,14 +493,10 @@ export function handleReconnect(
 
   const gs = ctx.gameSessions.get(cmd.roomId);
 
-  // Re-mark as connected
   ctx.rooms.setConnected(room, session.playerId, true);
   ctx.sessions.setRoom(sessionToken, cmd.roomId);
 
-  // Cancel reconnect window timer
   gs?.clearReconnectWindow(session.playerId);
-
-  // Notify opponent
   gs?.notifyOpponentReconnected(room, session.playerId);
 
   const seqNow   = gs?.allocateSequence() ?? 1;
@@ -576,19 +508,29 @@ export function handleReconnect(
   ];
   ctx.sessions.recordCommand(correlationId, ack);
 
-  // If client has missed events, send a SNAPSHOT sync
+  // If the client missed events, prefer a recipient-scoped REPLAY when the
+  // buffer still covers the gap (PROTOCOL §11.14); fall back to SNAPSHOT only
+  // when the buffer has been trimmed past the client's last known seq.
   if (cmd.lastReceivedSeq < seqNow) {
-    const sync = makeStateSyncSnapshot(cmd.roomId, snapshot, seqNow);
-    deliveries.push(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
+    const replay = gs?.getReplayEvents(cmd.lastReceivedSeq + 1, session.playerId) ?? null;
+    if (replay !== null && replay.length > 0) {
+      const sync = makeStateSyncReplay(
+        cmd.roomId,
+        cmd.lastReceivedSeq + 1,
+        seqNow,
+        replay,
+      );
+      deliveries.push(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
+    } else {
+      // Buffer exhausted or nothing to replay — send a full state snapshot.
+      const sync = makeStateSyncSnapshot(cmd.roomId, snapshot, seqNow);
+      deliveries.push(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
+    }
   }
 
   logger.info('Player reconnected', { roomId: cmd.roomId, playerId: session.playerId });
   return { deliveries };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SYNC_REQUEST
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function handleSyncRequest(
   connectionId: string,
@@ -610,8 +552,8 @@ export function handleSyncRequest(
   }
 
   const sessionState = ctx.gameSessions.get(cmd.roomId);
-  const replay = sessionState?.getReplayEvents(cmd.fromSeq) ?? null;
-  if (replay !== null) {
+  const replay = sessionState?.getReplayEvents(cmd.fromSeq, session.playerId) ?? null;
+  if (replay !== null && replay.length > 0) {
     const sync = makeStateSyncReplay(
       cmd.roomId,
       cmd.fromSeq,
@@ -633,10 +575,7 @@ export function handleSyncRequest(
   return ok(sendToConn(connectionId, sync as unknown as Record<string, unknown>));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Disconnect handler (not a protocol command — called by transport on close)
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Not a protocol command — called by the transport layer on connection close.
 export function handleDisconnect(
   sessionToken: SessionToken,
   ctx: ServerContext,
@@ -657,11 +596,8 @@ export function handleDisconnect(
   logger.info('Player disconnected', { roomId: session.roomId, playerId: session.playerId });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SendFn factory — wires GameSession back to the ConnectionManager
-// This is populated at wiring time (see wsServer.ts) via the registry pattern.
-// We use a late-binding registry so GameSession has no import of ConnectionManager.
-// ─────────────────────────────────────────────────────────────────────────────
+// A late-binding registry wires GameSession back to the ConnectionManager so
+// GameSession never needs to import it (see wsServer.ts for the wiring).
 
 /** Registry: playerId → active connection IDs. */
 export const playerConnectionRegistry = new Map<PlayerId, Set<string>>();
@@ -717,6 +653,26 @@ function makeSendFn(ctx: ServerContext, roomId: RoomId): SendFn {
         }
       });
     }
+  };
+}
+
+/**
+ * Returns the OnPlayerLeftFn callback given to GameSession so it can signal
+ * slot-cleanup when a reconnect window expires — without coupling GameSession
+ * to RoomStore or SessionStore directly.
+ */
+function makeOnPlayerLeftFn(ctx: ServerContext, roomId: RoomId): OnPlayerLeftFn {
+  return (playerId: PlayerId) => {
+    const room = ctx.rooms.getRoom(roomId);
+    if (room) {
+      ctx.rooms.removePlayer(room, playerId);
+    }
+    // Clear the room reference on any active session for this player.
+    const token = ctx.sessions.getTokenByPlayerId(playerId);
+    if (token) {
+      ctx.sessions.setRoom(token, null);
+    }
+    logger.info('Player slot freed after reconnect window expiry', { roomId, playerId });
   };
 }
 

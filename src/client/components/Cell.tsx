@@ -1,14 +1,6 @@
 /**
- * @file Cell.tsx
- * @description A single board cell with four possible visual states:
- *
- *  'empty'    — blank, clickable when it's the player's turn
- *  'x' / 'o' — confirmed mark (server-authoritative)
- *  'pending'  — optimistic mark (awaiting server confirmation)
- *  'winning'  — part of the winning line (highlight)
- *
- * The cell is a <button> for keyboard + screen-reader accessibility.
- * aria-label describes both position and content.
+ * A single board cell, rendered as a <button> for keyboard and screen-reader
+ * accessibility. Visual state reflects empty/mark/pending/winning.
  */
 
 import React from 'react';
@@ -21,7 +13,7 @@ interface CellProps {
   col:          BoardIndex;
   value:        CellValue;
   isPending:    boolean;   // optimistic mark in-flight
-  isWinning:    boolean;   // part of winning line
+  isWinning:    boolean;
   isClickable:  boolean;
   onClick:      (row: BoardIndex, col: BoardIndex) => void;
 }
@@ -51,10 +43,6 @@ export function Cell({ row, col, value, isPending, isWinning, isClickable, onCli
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 function resolveVisualState(
   value:     CellValue,
   isPending: boolean,
@@ -69,7 +57,7 @@ function resolveVisualState(
 }
 
 function markDisplay(value: CellValue, isPending: boolean): string {
-  if (isPending) return value || '';   // show mark but styled as pending
+  if (isPending) return value || '';
   return value;
 }
 

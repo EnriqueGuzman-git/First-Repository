@@ -1,14 +1,4 @@
-/**
- * @file RematchControls.tsx
- * @description Rematch proposal, acceptance, and decline with live countdown.
- *
- * States handled:
- *  NONE              — show "Request rematch" button
- *  REQUESTED_BY_ME   — show "Waiting for opponent…" with countdown
- *  REQUESTED_BY_THEM — show "Rematch?" accept/decline buttons with countdown
- *  DECLINED          — show "Rematch declined" message
- *  EXPIRED           — show "Rematch request expired" message
- */
+/** Rematch proposal, acceptance, and decline with a live expiry countdown. */
 
 import React, { useEffect, useState } from 'react';
 import type { RematchState } from '../store/gameStore';

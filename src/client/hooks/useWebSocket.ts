@@ -1,10 +1,6 @@
 /**
- * @file useWebSocket.ts
- * @description React hook that owns the WsClient lifecycle and maps every
- * incoming server event to a GameAction dispatch.
- *
- * This is the only file that imports WsClient in React code.
- * It bridges transport events → store actions → React re-renders.
+ * React hook that owns the WsClient lifecycle and maps every incoming server
+ * event to a GameAction dispatch (the only place WsClient is used in React).
  */
 
 import { useEffect, useRef, useCallback } from 'react';
@@ -19,10 +15,6 @@ import { WsClient } from '../lib/wsClient';
 import type { WsClientConfig, WsState } from '../lib/wsClient';
 import { buildReconnect, buildSyncRequest, newCommandId } from '../lib/commandBuilder';
 import type { GameAction, ClientState } from '../store/gameStore';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// useWebSocket
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function useWebSocket(
   config:    WsClientConfig,
@@ -99,10 +91,6 @@ export function useWebSocket(
   return { sendRaw, client: clientRef.current };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Event → Action dispatcher
-// ─────────────────────────────────────────────────────────────────────────────
-
 function dispatchEvent(
   event:    AnyEvent | ErrorEvent,
   state:    ClientState,
@@ -119,7 +107,6 @@ function dispatchEvent(
         playerId:      event.playerId,
         existingRoom:  event.existingRoom,
       });
-      // Update client-side room tracking
       if (event.existingRoom) {
         client?.setRoom(event.existingRoom.roomId);
       }

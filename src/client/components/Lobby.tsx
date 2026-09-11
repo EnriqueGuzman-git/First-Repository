@@ -1,13 +1,6 @@
 /**
- * @file Lobby.tsx
- * @description Room creation and join UI.
- *
- * Two flows:
- *  1. Create a new room → POST /api/rooms → receive roomId → auto-join via WS
- *  2. Join an existing room → enter 8-char code → join via WS
- *
- * Also shows the waiting-for-second-player state once a room is joined.
- * The "Ready" button is shown when both players are connected.
+ * Room creation and join UI, plus the waiting-for-opponent and ready-check
+ * states once a room is joined.
  */
 
 import React, { useState, useCallback } from 'react';
@@ -24,7 +17,6 @@ interface LobbyProps {
 export function Lobby({ state, joinRoom, playerReady, leaveRoom }: LobbyProps) {
   const { phase, roomId, players, readyPlayers, mySymbol } = state;
 
-  // ── Waiting for second player ─────────────────────────────────────────────
   if (phase === 'WAITING_FOR_PLAYER' && roomId) {
     return (
       <WaitingRoom
@@ -35,7 +27,6 @@ export function Lobby({ state, joinRoom, playerReady, leaveRoom }: LobbyProps) {
     );
   }
 
-  // ── Both players present: ready check ────────────────────────────────────
   if (phase === 'READY_CHECK' && roomId) {
     const amReady = mySymbol !== null && readyPlayers.includes(mySymbol);
     return (
@@ -51,7 +42,6 @@ export function Lobby({ state, joinRoom, playerReady, leaveRoom }: LobbyProps) {
     );
   }
 
-  // ── Default: create / join form ───────────────────────────────────────────
   return (
     <LobbyForm
       wsConnected={state.wsState === 'AUTHENTICATED'}
@@ -59,10 +49,6 @@ export function Lobby({ state, joinRoom, playerReady, leaveRoom }: LobbyProps) {
     />
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Lobby form (create / join)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function LobbyForm({
   wsConnected,
@@ -148,10 +134,6 @@ function LobbyForm({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Waiting room (first player waiting for second)
-// ─────────────────────────────────────────────────────────────────────────────
-
 function WaitingRoom({
   roomId,
   mySymbol,
@@ -187,10 +169,6 @@ function WaitingRoom({
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Ready room (both players present)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ReadyRoom({
   roomId,

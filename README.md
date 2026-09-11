@@ -1,5 +1,10 @@
 # Real-Time Multiplayer Tic-Tac-Toe
 
+[![CI](https://github.com/EnriqueGuzman-git/First-Repository/actions/workflows/ci.yml/badge.svg)](https://github.com/EnriqueGuzman-git/First-Repository/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](./.nvmrc)
+[![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-blue.svg)](./tsconfig.json)
+
 A production-oriented real-time multiplayer Tic-Tac-Toe application built with **React, TypeScript, Node.js, Express, and WebSockets**.
 
 The project is designed to demonstrate senior-level engineering practices around authoritative server state, real-time communication, protocol design, reconnect handling, idempotent commands, deterministic game logic, validation, observability, and automated testing.
@@ -193,6 +198,20 @@ npm start
 
 The default server port is `8080`.
 
+### Run with Docker
+
+The repository ships a multi-stage `Dockerfile` and a `docker-compose.yml` for
+the realtime server (HTTP API + WebSocket). Requires **Docker 24+** with the
+Compose v2 plugin:
+
+```bash
+docker compose up --build
+```
+
+The container runs as an unprivileged user, persists history to a named volume,
+and exposes a `/health` HEALTHCHECK. Build the React client separately with
+`npm run build:client` and host the static bundle from `dist/client`.
+
 ### Configuration
 
 The server supports these environment variables:
@@ -214,7 +233,8 @@ For production deployments, use `wss://` and configure an explicit trusted origi
 POST /api/rooms
 ```
 
-Returns a generated room ID and join URL.
+Returns a generated room ID and join URL. Rate-limited per client
+(20 requests/minute); returns `429` with a `Retry-After` header when exceeded.
 
 ### Get room state
 
@@ -222,7 +242,8 @@ Returns a generated room ID and join URL.
 GET /api/rooms/:id
 ```
 
-Returns room status, player count, and the current game summary.
+Returns room status, player count, and the current game summary. A malformed
+room id is rejected with `400 INVALID_ROOM_ID`.
 
 ### Get game history
 
@@ -272,7 +293,13 @@ npm test
 
 ### End-to-end tests
 
+The E2E suite launches the built server and the Vite dev server automatically,
+so on a fresh checkout do the one-time browser install and build the server
+first:
+
 ```bash
+npx playwright install chromium   # one-time: download the browser
+npm run build:server              # Playwright launches dist/server/index.js
 npm run test:e2e
 ```
 
@@ -328,7 +355,24 @@ These are deployment-scale concerns rather than prerequisites for understanding 
 
 - [`DESIGN.md`](./DESIGN.md) — product requirements, architecture, security, observability, testing, performance, and deployment design.
 - [`PROTOCOL.md`](./PROTOCOL.md) — authoritative WebSocket protocol, message catalog, sequencing, idempotency, and state machines.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — analysed backlog of known protocol gaps and the deployment-scale work, each with file references and sequencing rationale.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — setup, quality gates, and architecture conventions.
+- [`CHANGELOG.md`](./CHANGELOG.md) — notable changes.
+
+## Publishing this repository
+
+```bash
+git init
+git add .
+git commit -m "chore: initial commit"
+git branch -M main
+git remote add origin https://github.com/EnriqueGuzman-git/First-Repository.git
+git push -u origin main
+```
+
+CI (`.github/workflows/ci.yml`) runs automatically on push to `main` and on pull
+requests.
 
 ## License
 
-No open-source license has been selected yet. If this repository is intended for public reuse, add an appropriate `LICENSE` file before publishing.
+MIT © Enrique Guzman — see [LICENSE](./LICENSE) for details.

@@ -1,11 +1,6 @@
 /**
- * @file GameStatus.tsx
- * @description Turn indicator, result banner, and opponent reconnect countdown.
- *
- * Surfaces three distinct states:
- *  1. Active game  — whose turn it is, pending move indicator
- *  2. Game over    — winner / draw banner with winning line description
- *  3. Opponent disconnected — countdown to game abandonment
+ * Turn indicator, result banner, and opponent-disconnect countdown to game
+ * abandonment.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -31,7 +26,6 @@ export function GameStatus({
   opponentConnection,
   latencyMs,
 }: GameStatusProps) {
-  // ── Opponent disconnect countdown ─────────────────────────────────────────
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
 
   useEffect(() => {
@@ -49,7 +43,6 @@ export function GameStatus({
     return () => clearInterval(id);
   }, [opponentConnection]);
 
-  // ── Finished ──────────────────────────────────────────────────────────────
   if (gameStatus === 'FINISHED' && result) {
     return (
       <div className={`game-status game-status--finished game-status--${result.outcome.toLowerCase()}`}
@@ -62,7 +55,6 @@ export function GameStatus({
     );
   }
 
-  // ── Active: opponent disconnected ─────────────────────────────────────────
   if (gameStatus === 'ACTIVE' && opponentConnection?.kind === 'DISCONNECTED') {
     const mins  = Math.floor((secondsLeft ?? 0) / 60);
     const secs  = String((secondsLeft ?? 0) % 60).padStart(2, '0');
@@ -77,7 +69,6 @@ export function GameStatus({
     );
   }
 
-  // ── Active: normal ────────────────────────────────────────────────────────
   if (gameStatus === 'ACTIVE') {
     const isMyTurn = currentTurn === mySymbol;
     return (
@@ -101,10 +92,6 @@ export function GameStatus({
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sub-components
-// ─────────────────────────────────────────────────────────────────────────────
-
 function TurnIndicator({
   current,
   mine,
@@ -127,10 +114,6 @@ function TurnIndicator({
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function resultHeadline(result: GameResult, mySymbol: PlayerSymbol | null): string {
   switch (result.outcome) {

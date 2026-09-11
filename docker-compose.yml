@@ -1,0 +1,22 @@
+# Local containerised run of the realtime server.
+#   docker compose up --build
+# Then point the Vite dev client (npm run dev:client) at http://localhost:8080.
+
+services:
+  server:
+    build: .
+    image: tictactoe-server
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      SERVER_VERSION: "0.1.0"
+      # Set this to the exact origin the browser client is served from.
+      CORS_ORIGIN: "http://localhost:3000"
+      HISTORY_FILE: "/app/data/history.json"
+    volumes:
+      - tictactoe-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  tictactoe-data:

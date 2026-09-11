@@ -1,26 +1,12 @@
 /**
- * @file gameStore.ts
- * @description Centralised immutable client state machine.
+ * Centralised immutable client state machine (a plain reducer).
  *
  * State model:
- *
- *   confirmed   — The last server-authoritative snapshot.
- *                 Only updated when a server event is applied.
- *
- *   optimistic  — Overlay produced by local pre-validation.
- *                 May diverge from confirmed for a brief window (RTT).
- *                 On MOVE_ACK: reconcile confirmed with ACK board.
- *                 On MOVE_REJECTED: discard optimistic, revert to confirmed.
- *
- *   pending     — The single in-flight MAKE_MOVE command (if any).
- *                 There is at most ONE pending move at a time.
- *                 A second click is blocked while one is in-flight.
- *
- * Architecture:
- *  - Plain reducer function: (state, action) → state.
- *  - No external framework — the store is plain TypeScript.
- *  - React hook wraps it with useState + useReducer.
- *  - All server events funnel through a single dispatch entry point.
+ *   confirmed  — last server-authoritative snapshot.
+ *   optimistic — local pre-validation overlay; may diverge from confirmed for
+ *                one RTT. MOVE_ACK reconciles it; MOVE_REJECTED discards it.
+ *   pending    — the single in-flight MAKE_MOVE. At most one at a time; a
+ *                second click is blocked while one is in flight.
  */
 
 import type {
@@ -39,10 +25,6 @@ import type {
 import { EMPTY_BOARD } from '@ttt/shared/protocol';
 
 import type { WsState } from '../lib/wsClient';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type PendingMove = {
   readonly commandId: string;
@@ -82,12 +64,10 @@ export type LatencyMetrics = {
 };
 
 export type ClientState = {
-  // ── Identity ──
   sessionToken:   SessionToken | null;
   playerId:       PlayerId | null;
   mySymbol:       PlayerSymbol | null;
 
-  // ── Room ──
   roomId:         RoomId | null;
   gameId:         GameId | null;
   players: {
@@ -97,7 +77,7 @@ export type ClientState = {
   readyPlayers:   ReadonlyArray<PlayerSymbol>;
   opponentConnection: OpponentConnectionEvent;
 
-  // ── Confirmed game state (from server) ──
+  // Confirmed game state (from server).
   confirmedBoard:  BoardSnapshot;
   confirmedTurn:   PlayerSymbol;
   gameStatus:      GameStatus;
@@ -105,25 +85,15 @@ export type ClientState = {
   moveHistory:     ReadonlyArray<MoveRecord>;
   winningLine:     WinningLine | null;
 
-  // ── Optimistic overlay ──
   optimisticBoard: BoardSnapshot | null;  // null when no pending move
   pendingMove:     PendingMove | null;
 
-  // ── UI phase ──
   phase:           GamePhase;
   wsState:         WsState;
   rematch:         RematchState;
-
-  // ── Metrics ──
   latency:         LatencyMetrics;
-
-  // ── Sequence tracking ──
   lastReceivedSeq: number;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Initial state
-// ─────────────────────────────────────────────────────────────────────────────
 
 export const INITIAL_STATE: ClientState = {
   sessionToken:        null,
@@ -158,10 +128,6 @@ export const INITIAL_STATE: ClientState = {
 
   lastReceivedSeq: 0,
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Actions
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type GameAction =
   // Transport
@@ -222,17 +188,11 @@ export type GameAction =
   | { type: 'SEQ_ADVANCED';            seq: number }
 
   // Local
-  | { type: 'LEAVE_ROOM' }
-  | { type: 'MOVE_ACK_LATENCY';        ackMs: number };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Reducer
-// ─────────────────────────────────────────────────────────────────────────────
+  | { type: 'LEAVE_ROOM' };
 
 export function gameReducer(state: ClientState, action: GameAction): ClientState {
   switch (action.type) {
 
-    // ── Transport ────────────────────────────────────────────────────────────
     case 'WS_STATE_CHANGED': {
       const phase: GamePhase =
         action.wsState === 'RECONNECTING' ? 'RECONNECTING'
@@ -252,16 +212,19 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Auth ─────────────────────────────────────────────────────────────────
     case 'AUTH_ACK': {
       return {
         ...state,
         sessionToken: action.sessionToken,
         playerId:     action.playerId,
+        // Hydrate roomId from the server's existingRoom so that the
+        // auto-RECONNECT trigger in useWebSocket fires correctly after a
+        // page reload (stateRef.current.roomId was null without this).
+        roomId: action.existingRoom?.roomId ?? state.roomId,
+        mySymbol: action.existingRoom?.symbol ?? state.mySymbol,
       };
     }
 
-    // ── Room joined ───────────────────────────────────────────────────────────
     case 'ROOM_JOINED': {
       return {
         ...state,
@@ -307,7 +270,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       return { ...state, readyPlayers: action.readyPlayers };
     }
 
-    // ── Game started ──────────────────────────────────────────────────────────
     case 'GAME_STARTED': {
       return {
         ...state,
@@ -327,9 +289,8 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Optimistic move (before server response) ──────────────────────────────
     case 'MOVE_OPTIMISTIC': {
-      // Only apply if there is no already-pending move
+      // Invariant: at most one pending move — ignore a second while one is live.
       if (state.pendingMove !== null) return state;
       return {
         ...state,
@@ -343,9 +304,7 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Move ACK (server confirmed our move) ──────────────────────────────────
     case 'MOVE_ACK': {
-      // Drop if this ack is for a stale pending move (idempotent retry)
       const ackMs =
         state.pendingMove?.sentAt !== undefined
           ? Date.now() - state.pendingMove.sentAt
@@ -364,19 +323,18 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Move broadcast (opponent moved) ───────────────────────────────────────
     case 'MOVE_BROADCAST': {
       const newTurn = action.nextTurn ?? state.confirmedTurn;
       return {
         ...state,
         confirmedBoard: action.board,
         confirmedTurn:  newTurn,
-        // Clear any lingering optimistic state from the opponent's move
+        // Keep our own in-flight overlay; otherwise clear stale optimistic state.
         optimisticBoard: state.pendingMove ? state.optimisticBoard : null,
       };
     }
 
-    // ── Move rejected: roll back optimistic overlay ───────────────────────────
+    // Roll back the optimistic overlay to the server's confirmed board.
     case 'MOVE_REJECTED': {
       return {
         ...state,
@@ -387,7 +345,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Game finished ─────────────────────────────────────────────────────────
     case 'GAME_FINISHED': {
       return {
         ...state,
@@ -402,7 +359,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       };
     }
 
-    // ── Rematch ───────────────────────────────────────────────────────────────
     case 'REMATCH_REQUESTED': {
       const isMe = action.requestedBy === state.mySymbol;
       return {
@@ -415,7 +371,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
     case 'REMATCH_DECLINED':  return { ...state, rematch: { status: 'DECLINED' } };
     case 'REMATCH_EXPIRED':   return { ...state, rematch: { status: 'EXPIRED' } };
 
-    // ── Presence ──────────────────────────────────────────────────────────────
     case 'OPPONENT_DISCONNECTED': {
       return {
         ...state,
@@ -429,7 +384,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       return { ...state, opponentConnection: { kind: 'RECONNECTED' } };
     }
 
-    // ── Reconnect ACK ─────────────────────────────────────────────────────────
     case 'RECONNECT_ACK': {
       return {
         ...state,
@@ -455,10 +409,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
       return { ...state, lastReceivedSeq: action.seq };
     }
 
-    case 'MOVE_ACK_LATENCY': {
-      return { ...state, latency: { ...state.latency, lastMoveAckMs: action.ackMs } };
-    }
-
     case 'LEAVE_ROOM': {
       return {
         ...INITIAL_STATE,
@@ -476,10 +426,6 @@ export function gameReducer(state: ClientState, action: GameAction): ClientState
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 function derivePhase(s: ClientState): GamePhase {
   if (!s.roomId) return 'LOBBY';
   if (s.gameStatus === 'ACTIVE')    return 'ACTIVE';
@@ -488,18 +434,12 @@ function derivePhase(s: ClientState): GamePhase {
   return 'WAITING_FOR_PLAYER';
 }
 
-/**
- * Compute the board that should be displayed.
- * Shows the optimistic overlay while a move is in-flight,
- * falling back to the confirmed board.
- */
+/** Board to display: the optimistic overlay while in-flight, else confirmed. */
 export function displayBoard(state: ClientState): BoardSnapshot {
   return state.optimisticBoard ?? state.confirmedBoard;
 }
 
-/**
- * True if the local player can click a cell right now.
- */
+/** True if the local player can click a cell right now. */
 export function canMove(state: ClientState): boolean {
   return (
     state.gameStatus === 'ACTIVE' &&
@@ -510,10 +450,7 @@ export function canMove(state: ClientState): boolean {
   );
 }
 
-/**
- * True when the optimistic overlay differs from the confirmed board.
- * Used to disable the board while waiting for server confirmation.
- */
+/** True while a move is in-flight; used to disable the board until confirmed. */
 export function hasPendingMove(state: ClientState): boolean {
   return state.pendingMove !== null;
 }

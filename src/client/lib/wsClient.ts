@@ -1,18 +1,9 @@
 /**
- * @file wsClient.ts
- * @description Raw WebSocket transport layer.
+ * Raw WebSocket transport: connection lifecycle, backoff reconnection,
+ * PING/PONG heartbeat, sequence-gap detection, and latency measurement.
  *
- * Responsibilities:
- *  - Manage the WebSocket connection lifecycle (open → auth → running).
- *  - Exponential-backoff reconnection with jitter.
- *  - Application-level PING/PONG heartbeat.
- *  - Frame-level parse + type-guard validation via parseEvent.
- *  - Sequence-gap detection: emit SYNC_REQUEST when events arrive out-of-order.
- *  - Measure round-trip latency per PONG.
- *  - Persist sessionToken + roomId in sessionStorage for reconnect.
- *
- * This module contains NO React, NO game logic, and NO store references.
- * It is a pure transport layer; callers inject callbacks.
+ * Pure transport — no React, no game logic, no store references; callers
+ * inject callbacks.
  */
 
 import {
@@ -31,10 +22,6 @@ import type {
   RoomId,
   CommandId,
 } from '@ttt/shared/protocol';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public types
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type WsState =
   | 'IDLE'
@@ -62,17 +49,9 @@ export type WsClientConfig = {
   maxDelayMs?:     number;   // default 30_000
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Storage keys
-// ─────────────────────────────────────────────────────────────────────────────
-
 const STORAGE_SESSION_TOKEN = 'ttt_session_token';
 const STORAGE_PLAYER_ID     = 'ttt_player_id';
 const STORAGE_ROOM_ID       = 'ttt_room_id';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WsClient
-// ─────────────────────────────────────────────────────────────────────────────
 
 export class WsClient {
   private ws:             WebSocket | null = null;
@@ -101,14 +80,11 @@ export class WsClient {
     this.baseDelayMs = config.baseDelayMs ?? 500;
     this.maxDelayMs  = config.maxDelayMs  ?? 30_000;
 
-    // Restore persisted credentials
     const storedToken = sessionStorage.getItem(STORAGE_SESSION_TOKEN);
     const storedRoom  = sessionStorage.getItem(STORAGE_ROOM_ID);
     if (storedToken) this.sessionToken = brand<SessionToken>(storedToken);
     if (storedRoom)  this.roomId       = brand<RoomId>(storedRoom);
   }
-
-  // ── Public API ─────────────────────────────────────────────────────────────
 
   connect(): void {
     if (this.destroyed) return;
@@ -140,9 +116,7 @@ export class WsClient {
     this.lastSeq = 0;
   }
 
-  getState(): WsState  { return this.state; }
   getSessionToken():   SessionToken | null { return this.sessionToken; }
-  getRoomId():         RoomId | null       { return this.roomId; }
 
   destroy(): void {
     this.destroyed = true;
@@ -152,8 +126,6 @@ export class WsClient {
     this.ws = null;
     this.setState('CLOSED');
   }
-
-  // ── Connection ─────────────────────────────────────────────────────────────
 
   private openSocket(): void {
     this.setState(this.retryCount === 0 ? 'CONNECTING' : 'RECONNECTING');
@@ -195,8 +167,6 @@ export class WsClient {
     }
   }
 
-  // ── AUTH ───────────────────────────────────────────────────────────────────
-
   private sendAuth(): void {
     const commandId = crypto.randomUUID();
     const messageId = crypto.randomUUID();
@@ -211,8 +181,6 @@ export class WsClient {
       clientVersion:   this.config.clientVersion,
     });
   }
-
-  // ── Heartbeat ──────────────────────────────────────────────────────────────
 
   private startHeartbeat(): void {
     this.stopHeartbeat();
@@ -238,9 +206,8 @@ export class WsClient {
       clientTime:      this.pingTime,
     });
 
-    // Expect PONG within PONG_TIMEOUT_MS
     this.pongTimer = setTimeout(() => {
-      // No PONG received — connection is dead
+      // No PONG within PONG_TIMEOUT_MS — treat the connection as dead.
       this.ws?.close(4006, 'Ping timeout');
     }, PONG_TIMEOUT_MS);
   }
@@ -248,8 +215,6 @@ export class WsClient {
   private clearPongTimer(): void {
     if (this.pongTimer !== null) { clearTimeout(this.pongTimer); this.pongTimer = null; }
   }
-
-  // ── Incoming frame handling ────────────────────────────────────────────────
 
   private handleFrame(raw: string): void {
     const parsed = parseEvent(raw);
@@ -261,7 +226,6 @@ export class WsClient {
 
     const event = parsed.event;
 
-    // ── AUTH_ACK: complete authentication ──────────────────────────────────
     if (event.type === 'AUTH_ACK') {
       this.sessionToken = event.sessionToken;
       sessionStorage.setItem(STORAGE_SESSION_TOKEN, event.sessionToken);
@@ -269,13 +233,12 @@ export class WsClient {
       this.setState('AUTHENTICATED');
     }
 
-    // ── PONG: measure RTT ──────────────────────────────────────────────────
     if (event.type === 'PONG') {
       this.clearPongTimer();
       this.callbacks.onLatency(Date.now() - event.clientTime);
     }
 
-    // ── Sequence-gap detection for room-scoped events ─────────────────────
+    // Sequence-gap detection for room-scoped events.
     if ('sessionSeq' in event && typeof event.sessionSeq === 'number') {
       const seq = event.sessionSeq;
       // GAME_STARTED and STATE_SYNC establish a new authoritative sequence.
@@ -291,15 +254,12 @@ export class WsClient {
       // seq <= lastSeq: duplicate — let dispatcher handle idempotently
     }
 
-    // Deliver to caller
     this.callbacks.onEvent(event);
 
     // Replay dispatch may process GAME_STARTED and reset the transport-side
     // counter while applying the payload. Restore the sync head afterwards.
     if (event.type === 'STATE_SYNC') this.lastSeq = event.sessionSeq;
   }
-
-  // ── Retry ──────────────────────────────────────────────────────────────────
 
   private scheduleRetry(): void {
     if (this.destroyed) return;
@@ -325,32 +285,9 @@ export class WsClient {
     if (this.retryTimer !== null) { clearTimeout(this.retryTimer); this.retryTimer = null; }
   }
 
-  // ── State ──────────────────────────────────────────────────────────────────
-
   private setState(next: WsState): void {
     if (this.state === next) return;
     this.state = next;
     this.callbacks.onStateChange(next);
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Singleton factory — one client per browser tab
-// ─────────────────────────────────────────────────────────────────────────────
-
-let instance: WsClient | null = null;
-
-export function getWsClient(
-  config: WsClientConfig,
-  callbacks: WsClientCallbacks,
-): WsClient {
-  if (!instance) {
-    instance = new WsClient(config, callbacks);
-  }
-  return instance;
-}
-
-export function destroyWsClient(): void {
-  instance?.destroy();
-  instance = null;
 }

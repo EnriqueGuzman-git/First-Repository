@@ -1,19 +1,12 @@
 /**
- * @file roomStore.ts
- * @description In-memory room registry.
- *
+ * In-memory room registry owning room creation, lookup, expiry, and cleanup.
  * A RoomRecord is a lightweight metadata envelope around a GameSession.
- * The store owns room creation, lookup, expiry, and cleanup.
  */
 
 import type { RoomId, PlayerId, PlayerSymbol, RoomStatus } from '../../shared/protocol/types.js';
 import { ROOM_TTL_MS } from '../../shared/protocol/types.js';
 import { generateRoomId } from '../utils/idGenerator.js';
 import { logger } from '../utils/logger.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type PlayerSlot = {
   playerId: PlayerId;
@@ -36,10 +29,6 @@ export type RoomRecord = {
   lastActivityAt: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers on RoomRecord
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function roomStatus(room: RoomRecord): RoomStatus {
   if (room.playerX !== null && room.playerO !== null) return 'FULL';
   return 'OPEN';
@@ -47,10 +36,6 @@ export function roomStatus(room: RoomRecord): RoomStatus {
 
 export function playerCount(room: RoomRecord): number {
   return (room.playerX ? 1 : 0) + (room.playerO ? 1 : 0);
-}
-
-export function getSlot(room: RoomRecord, symbol: PlayerSymbol): PlayerSlot | null {
-  return symbol === 'X' ? room.playerX : room.playerO;
 }
 
 export function getSlotByPlayerId(room: RoomRecord, playerId: PlayerId): PlayerSlot | null {
@@ -71,14 +56,8 @@ export function getOpponentSlot(room: RoomRecord, playerId: PlayerId): PlayerSlo
   return null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RoomStore
-// ─────────────────────────────────────────────────────────────────────────────
-
 export class RoomStore {
   private readonly rooms = new Map<RoomId, RoomRecord>();
-
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   createRoom(): RoomRecord {
     const roomId = generateRoomId();
@@ -110,21 +89,12 @@ export class RoomStore {
     return room;
   }
 
-  deleteRoom(roomId: RoomId): void {
-    this.rooms.delete(roomId);
-  }
-
   touch(roomId: RoomId): void {
     const r = this.rooms.get(roomId);
     if (r) r.lastActivityAt = Date.now();
   }
 
-  // ── Player slot management ────────────────────────────────────────────────
-
-  /**
-   * Assign the next available symbol to the player.
-   * Returns the assigned symbol, or null if the room is full.
-   */
+  /** Assign the next free symbol to the player, or null if the room is full. */
   addPlayer(
     room: RoomRecord,
     playerId: PlayerId,
@@ -142,7 +112,7 @@ export class RoomStore {
       room.lastActivityAt = now;
       return 'O';
     }
-    return null; // full
+    return null;
   }
 
   removePlayer(room: RoomRecord, playerId: PlayerId): void {
@@ -165,8 +135,6 @@ export class RoomStore {
     }
   }
 
-  // ── Ready state ───────────────────────────────────────────────────────────
-
   markReady(room: RoomRecord, symbol: PlayerSymbol): void {
     room.readySymbols.add(symbol);
   }
@@ -178,8 +146,6 @@ export class RoomStore {
   resetReady(room: RoomRecord): void {
     room.readySymbols.clear();
   }
-
-  // ── Maintenance ───────────────────────────────────────────────────────────
 
   purgeExpired(): void {
     const now = Date.now();

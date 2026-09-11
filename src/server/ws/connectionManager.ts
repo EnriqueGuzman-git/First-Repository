@@ -1,19 +1,6 @@
 /**
- * @file connectionManager.ts
- * @description WebSocket connection registry.
- *
- * Responsibilities (transport layer only — no game logic):
- *  1. Assign a stable connectionId to each WebSocket.
- *  2. Map connectionId ↔ SessionToken (set after AUTH succeeds).
- *  3. Map connectionId ↔ PlayerId  (set after AUTH succeeds, for GameSession callbacks).
- *  4. Send serialised events to a specific connection.
- *  5. Enforce per-connection message rate limiting.
- *  6. Fire the AUTH timeout if AUTH is not received within AUTH_TIMEOUT_MS.
- *  7. Detect idle connections (no message for CONNECTION_IDLE_TIMEOUT_MS).
- *  8. Track connection metadata for observability.
- *
- * This class has no knowledge of game state, rooms, or the protocol message
- * semantics. It only knows about sockets, bytes, and timing.
+ * WebSocket connection registry: assigns connectionIds, tracks auth/session
+ * mapping, timers, and rate limits. Transport only — no game or protocol logic.
  */
 
 import type { WebSocket } from 'ws';
@@ -27,12 +14,8 @@ import {
 } from '../../shared/protocol/types.js';
 import { logger } from '../utils/logger.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Rate-limiter (token bucket, per connection)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const RATE_WINDOW_MS   = 10_000; // 10 seconds
-const RATE_MAX_MSGS    = 60;     // 60 messages per window  (§16 PROTOCOL.md)
+const RATE_WINDOW_MS   = 10_000;
+const RATE_MAX_MSGS    = 60;     // §16 PROTOCOL.md
 
 type RateBucket = {
   windowStart: number;
@@ -48,10 +31,6 @@ function checkRate(bucket: RateBucket): boolean {
   bucket.count++;
   return bucket.count <= RATE_MAX_MSGS;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Connection record
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type ConnectionRecord = {
   readonly connectionId: string;
@@ -70,10 +49,6 @@ export type ConnectionRecord = {
   rateBucket:            RateBucket;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ConnectionManager
-// ─────────────────────────────────────────────────────────────────────────────
-
 export class ConnectionManager {
   private readonly connections = new Map<string, ConnectionRecord>();
 
@@ -82,12 +57,7 @@ export class ConnectionManager {
   /** Called when idle timeout fires. */
   onIdleTimeout?:  (connectionId: string) => void;
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
-
-  /**
-   * Register a new WebSocket connection.
-   * Returns the assigned connectionId.
-   */
+  /** Register a new WebSocket connection; returns the assigned connectionId. */
   register(socket: WebSocket): string {
     const connectionId = randomUUID();
     const now          = Date.now();
@@ -105,13 +75,11 @@ export class ConnectionManager {
       rateBucket:    { windowStart: now, count: 0 },
     };
 
-    // Start AUTH timeout
     record.authTimer = setTimeout(() => {
       logger.warn('Auth timeout', { connectionId });
       this.onAuthTimeout?.(connectionId);
     }, AUTH_TIMEOUT_MS);
 
-    // Start idle timeout
     record.idleTimer = setTimeout(() => {
       logger.warn('Idle timeout', { connectionId });
       this.onIdleTimeout?.(connectionId);
@@ -122,9 +90,7 @@ export class ConnectionManager {
     return connectionId;
   }
 
-  /**
-   * Mark the connection as authenticated. Clears the AUTH timeout.
-   */
+  /** Mark the connection authenticated and clear the AUTH timeout. */
   authenticate(
     connectionId: string,
     sessionToken: SessionToken,
@@ -145,9 +111,7 @@ export class ConnectionManager {
     logger.debug('Connection authenticated', { connectionId, playerId });
   }
 
-  /**
-   * Remove a connection and clean up all timers.
-   */
+  /** Remove a connection and clean up all timers. */
   unregister(connectionId: string): void {
     const rec = this.connections.get(connectionId);
     if (!rec) return;
@@ -159,12 +123,7 @@ export class ConnectionManager {
     logger.debug('Connection unregistered', { connectionId });
   }
 
-  // ── Sending ───────────────────────────────────────────────────────────────
-
-  /**
-   * Serialise and send an event object to a specific connection.
-   * Silently drops the message if the connection is gone or closing.
-   */
+  /** Send an event to a connection; silently drops if it's gone or closing. */
   send(connectionId: string, event: Record<string, unknown>): void {
     const rec = this.connections.get(connectionId);
     if (!rec) return;
@@ -179,10 +138,23 @@ export class ConnectionManager {
     }
   }
 
-  /**
-   * Close a connection with a given code and reason.
-   * Also sends a final event if provided (e.g. ERROR before close).
-   */
+  /** Best-effort send to every open connection (e.g. SERVER_SHUTTING_DOWN). */
+  broadcastAll(event: Record<string, unknown>): void {
+    const payload = JSON.stringify(event);
+    for (const rec of this.connections.values()) {
+      if (rec.socket.readyState !== 1 /* OPEN */) continue;
+      try {
+        rec.socket.send(payload);
+      } catch (err) {
+        logger.error('Broadcast send failed', {
+          connectionId: rec.connectionId,
+          err: String(err),
+        });
+      }
+    }
+  }
+
+  /** Close a connection, optionally sending a final event first (e.g. ERROR). */
   close(
     connectionId: string,
     code: number,
@@ -203,31 +175,20 @@ export class ConnectionManager {
     this.unregister(connectionId);
   }
 
-  // ── Rate limiting ─────────────────────────────────────────────────────────
-
-  /**
-   * Returns true if the connection is within its rate limit.
-   * Side effect: increments the bucket counter.
-   */
+  /** True if within rate limit. Side effect: increments the bucket counter. */
   checkRateLimit(connectionId: string): boolean {
     const rec = this.connections.get(connectionId);
     if (!rec) return false;
     return checkRate(rec.rateBucket);
   }
 
-  // ── Message tracking ──────────────────────────────────────────────────────
-
-  /**
-   * Touch last-message timestamp and reset the idle timer.
-   * Call on every received message.
-   */
+  /** Update last-message timestamp and reset the idle timer, per message. */
   touch(connectionId: string): void {
     const rec = this.connections.get(connectionId);
     if (!rec) return;
 
     rec.lastMessageAt = Date.now();
 
-    // Reset idle timer
     if (rec.idleTimer !== null) clearTimeout(rec.idleTimer);
     rec.idleTimer = setTimeout(() => {
       logger.warn('Idle timeout', { connectionId });
@@ -235,26 +196,13 @@ export class ConnectionManager {
     }, CONNECTION_IDLE_TIMEOUT_MS);
   }
 
-  // ── Frame size guard ──────────────────────────────────────────────────────
-
-  /**
-   * Returns true if the raw frame string is within the allowed size.
-   */
+  /** True if the raw frame is within the allowed size. */
   isFrameSizeOk(rawFrame: string): boolean {
     return Buffer.byteLength(rawFrame, 'utf8') <= MAX_FRAME_BYTES;
   }
 
-  // ── Lookups ───────────────────────────────────────────────────────────────
-
   getRecord(connectionId: string): ConnectionRecord | null {
     return this.connections.get(connectionId) ?? null;
-  }
-
-  getConnectionIdForPlayer(playerId: PlayerId): string | null {
-    for (const [id, rec] of this.connections) {
-      if (rec.playerId === playerId) return id;
-    }
-    return null;
   }
 
   get connectionCount(): number { return this.connections.size; }

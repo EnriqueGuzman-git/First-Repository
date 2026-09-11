@@ -4,6 +4,26 @@
   "private": true,
   "description": "Production-oriented real-time multiplayer Tic-Tac-Toe",
   "type": "module",
+  "license": "MIT",
+  "author": "Enrique Guzman",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EnriqueGuzman-git/First-Repository.git"
+  },
+  "homepage": "https://github.com/EnriqueGuzman-git/First-Repository#readme",
+  "bugs": {
+    "url": "https://github.com/EnriqueGuzman-git/First-Repository/issues"
+  },
+  "keywords": [
+    "typescript",
+    "websocket",
+    "real-time",
+    "multiplayer",
+    "react",
+    "node",
+    "game-server",
+    "server-authoritative"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },

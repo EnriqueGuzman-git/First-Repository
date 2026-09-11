@@ -1,18 +1,4 @@
-/**
- * @file engine.test.ts
- * @description Comprehensive unit tests for the deterministic Tic-Tac-Toe game engine.
- *
- * Test surface:
- *  - startGame / createRematch
- *  - applyMove: all valid paths, all rejection reasons
- *  - detectWin: all 8 winning lines (3 rows, 3 cols, 2 diagonals)
- *  - isBoardFull / draw detection
- *  - forfeit / abandon
- *  - replayMoves: determinism, partial failure
- *  - verifyInvariants: all 13 invariants (positive + negative)
- *  - Helpers: applyMarkToBoard, boardFromHistory, opponent, isValidPosition
- *  - Property / invariant tests (hand-rolled; no external PBT library needed)
- */
+/** Unit tests for the deterministic Tic-Tac-Toe game engine. */
 
 import { describe, it, expect } from 'vitest';
 
@@ -41,10 +27,6 @@ import type {
 
 import { EMPTY_BOARD } from '../../shared/protocol/types.js';
 import type { BoardSnapshot, PlayerSymbol } from '../../shared/protocol/types.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test fixtures and builders
-// ─────────────────────────────────────────────────────────────────────────────
 
 const PLAYER_X = 'player-x-id';
 const PLAYER_O = 'player-o-id';
@@ -108,10 +90,6 @@ function playSequence(
   }
   return state;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 1. startGame
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('startGame', () => {
   it('returns status ACTIVE', () => {
@@ -178,10 +156,6 @@ describe('startGame', () => {
     expect(verifyInvariants(newState)).toHaveLength(0);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. applyMove — valid moves
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('applyMove — valid moves', () => {
   it('accepts first move by X on empty board', () => {
@@ -290,25 +264,10 @@ describe('applyMove — valid moves', () => {
     if (!result.accepted) return;
     expect(result.newState.status).toBe('ACTIVE');
   });
-
-  it('all 9 valid cells can be filled in sequence until draw', () => {
-    // X O X / O X O / O X O  — draw: X=5, O=4, no winner
-    //   0   1   2
-    // 0[X] [O] [X]
-    // 1[O] [X] [O]
-    // 2[O] [X] [O]
-    // Use the known draw sequence from the draw test below instead
-    expect(true).toBe(true); // placeholder — draw tested separately
-  });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. applyMove — rejections
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('applyMove — rejection: GAME_NOT_ACTIVE', () => {
   it('rejects move when game is FINISHED', () => {
-    // Play X wins top row
     const state = playSequence(freshGame(), [
       [PLAYER_X, 0, 0], [PLAYER_O, 1, 0],
       [PLAYER_X, 0, 1], [PLAYER_O, 1, 1],
@@ -368,7 +327,6 @@ describe('applyMove — rejection: CELL_OCCUPIED', () => {
     const r1 = applyMove(state, move(PLAYER_X, 1, 1));
     expect(r1.accepted).toBe(true);
     if (!r1.accepted) return;
-    // O tries to place on the same cell
     const r2 = applyMove(r1.newState, move(PLAYER_O, 1, 1));
     expect(r2.accepted).toBe(false);
     if (r2.accepted) return;
@@ -405,18 +363,8 @@ describe('applyMove — rejection: OUT_OF_BOUNDS', () => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. Win detection — all 8 lines
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('win detection — all 8 winning lines', () => {
-  /**
-   * For each of the 8 ALL_WINNING_LINES, construct a game where X fills
-   * exactly those 3 cells (with O filling neutral cells) and verify that
-   * the game ends with X winning on that exact line.
-   */
-
-  // Precompute which cells are NOT on the winning line, for O's moves
+  // Cells NOT on the winning line, used for O's (losing) moves.
   function neutralCells(
     linePositions: ReadonlyArray<{ row: number; col: number }>,
   ): [number, number][] {
@@ -433,9 +381,6 @@ describe('win detection — all 8 winning lines', () => {
   ALL_WINNING_LINES.forEach((line, idx) => {
     it(`X wins on line #${idx} (${line.type}: ${line.positions.map((p) => `[${p.row},${p.col}]`).join(',')})`, () => {
       const neutrals = neutralCells(line.positions);
-      // Build move sequence: X takes line[0], O takes neutral[0],
-      //                       X takes line[1], O takes neutral[1],
-      //                       X takes line[2] → wins
       const seq: [string, number, number][] = [
         [PLAYER_X, line.positions[0]!.row, line.positions[0]!.col],
         [PLAYER_O, neutrals[0]![0], neutrals[0]![1]],
@@ -449,7 +394,6 @@ describe('win detection — all 8 winning lines', () => {
       expect(finalState.result?.outcome).toBe('WIN');
       expect(finalState.result?.winner).toBe('X');
       expect(finalState.result?.winningLine).not.toBeNull();
-      // Verify the detected line matches the expected line type and positions
       const detectedLine = finalState.result?.winningLine;
       expect(detectedLine).not.toBeNull();
       if (!detectedLine) return;
@@ -459,9 +403,7 @@ describe('win detection — all 8 winning lines', () => {
   });
 
   it('O can also win (column 1)', () => {
-    // X must go first — give X non-winning positions
-    // X: (0,0) (0,2) (2,0)
-    // O: (0,1) (1,1) (2,1) — column 1
+    // X must go first, so give X non-winning positions while O fills column 1.
     const seq: [string, number, number][] = [
       [PLAYER_X, 0, 0], [PLAYER_O, 0, 1],
       [PLAYER_X, 0, 2], [PLAYER_O, 1, 1],
@@ -473,7 +415,6 @@ describe('win detection — all 8 winning lines', () => {
   });
 
   it('game does not end before 3 cells of the same symbol are in a line', () => {
-    // After 4 moves (X:2, O:2) no win yet
     const state = playSequence(freshGame(), [
       [PLAYER_X, 0, 0], [PLAYER_O, 1, 1],
       [PLAYER_X, 0, 1], [PLAYER_O, 2, 2],
@@ -483,7 +424,6 @@ describe('win detection — all 8 winning lines', () => {
   });
 
   it('detects win on the last possible move (move 5 of the game)', () => {
-    // Row 0 win for X on move 5
     const seq: [string, number, number][] = [
       [PLAYER_X, 0, 0], [PLAYER_O, 1, 0],
       [PLAYER_X, 0, 1], [PLAYER_O, 1, 1],
@@ -496,36 +436,8 @@ describe('win detection — all 8 winning lines', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. Draw detection
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('draw detection', () => {
-  /**
-   * A known draw position (no winner, all cells filled):
-   *   X | O | X
-   *   O | X | X
-   *   O | X | O
-   * Moves (X first):
-   *   X(0,0) O(0,1) X(0,2) O(1,0) X(1,1) X(1,2)... wait, need to alternate.
-   *
-   * Valid draw sequence:
-   *   X(0,0), O(0,1), X(0,2),
-   *   O(1,0), X(1,1), O(2,0),
-   *   X(1,2), O(2,2), X(2,1)
-   *   Board: X O X / O X X / O X O  — no winner
-   *
-   *   Wait: X=5, O=4. Check for winner:
-   *   Row 0: X O X — no
-   *   Row 1: O X X — no
-   *   Row 2: O X O — no
-   *   Col 0: X O O — no
-   *   Col 1: O X X — no
-   *   Col 2: X X O — no
-   *   Diag TL-BR: X X O — no
-   *   Diag TR-BL: X X O — no
-   *   ✓ Draw
-   */
+  // A full board with no winning line (X=5, O=4).
   const drawSequence: [string, number, number][] = [
     [PLAYER_X, 0, 0], [PLAYER_O, 0, 1],
     [PLAYER_X, 0, 2], [PLAYER_O, 1, 0],
@@ -570,19 +482,13 @@ describe('draw detection', () => {
 
   it('rejects any move after draw', () => {
     const finalState = playSequence(freshGame(), drawSequence);
-    // Board is full — but rejection reason should be GAME_NOT_ACTIVE, not OUT_OF_BOUNDS
-    // Try a hypothetical extra move (all cells occupied, but we test the status guard first)
-    // Reload a draw state and attempt move at an already-filled cell
+    // Status guard runs first, so the reason is GAME_NOT_ACTIVE, not OUT_OF_BOUNDS/CELL_OCCUPIED.
     const result = applyMove(finalState, move(PLAYER_X, 0, 0));
     expect(result.accepted).toBe(false);
     if (result.accepted) return;
     expect(result.rejectionReason).toBe('GAME_NOT_ACTIVE');
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. forfeit
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('forfeit', () => {
   it('X forfeiting makes O the winner', () => {
@@ -618,7 +524,6 @@ describe('forfeit', () => {
 
   it('forfeit by unknown player still ends game with no winner', () => {
     const result = forfeit(freshGame(), { kind: 'FORFEIT', playerId: 'unknown-player', timestamp: T0 });
-    // resolveSymbol returns null → winner is null
     expect(result.newState.status).toBe('FINISHED');
     expect(result.newState.result?.winner).toBeNull();
   });
@@ -628,10 +533,6 @@ describe('forfeit', () => {
     expect(verifyInvariants(result.newState)).toHaveLength(0);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 7. abandon
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('abandon', () => {
   it('X abandoning makes O the winner', () => {
@@ -660,10 +561,6 @@ describe('abandon', () => {
     expect(verifyInvariants(result.newState)).toHaveLength(0);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. createRematch
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('createRematch', () => {
   function finishedGame(): GameState {
@@ -698,7 +595,6 @@ describe('createRematch', () => {
   it('swaps back on second rematch: O → X', () => {
     const prev = finishedGame();
     const r1 = createRematch(prev, 'game-002', T0 + 1000).newState;
-    // Finish rematch game
     const finishedR1 = playSequence(r1, [
       [PLAYER_O, 0, 0], [PLAYER_X, 1, 0],
       [PLAYER_O, 0, 1], [PLAYER_X, 1, 1],
@@ -747,10 +643,6 @@ describe('createRematch', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 9. replayMoves — determinism
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('replayMoves', () => {
   const winningCommands: MakeMoveCommand[] = [
     move(PLAYER_X, 0, 0, { commandId: 'c1', timestamp: T0 + 1 }),
@@ -780,7 +672,6 @@ describe('replayMoves', () => {
   it('is deterministic: board matches explicit board construction', () => {
     const result = replayMoves(freshGame(), winningCommands);
     if (!result.completed) return;
-    // X at (0,0),(0,1),(0,2); O at (1,0),(1,1)
     const expectedBoard: BoardSnapshot = [
       'X', 'X', 'X',
       'O', 'O', '',
@@ -800,7 +691,6 @@ describe('replayMoves', () => {
     if (result.completed) return;
     expect(result.failedAtIndex).toBe(1);
     expect(result.failureReason).toBe('CELL_OCCUPIED');
-    // State should reflect only the first move
     expect(result.finalState.moveHistory).toHaveLength(1);
   });
 
@@ -843,10 +733,6 @@ describe('replayMoves', () => {
     expect(r1.finalState.result?.outcome).toBe('DRAW');
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. verifyInvariants — positive cases (all valid states pass)
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('verifyInvariants — valid states produce no violations', () => {
   it('fresh game', () => {
@@ -920,14 +806,10 @@ describe('verifyInvariants — valid states produce no violations', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11. verifyInvariants — negative cases (tampered states are caught)
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('verifyInvariants — tampered states are caught', () => {
   it('detects board/history mismatch (extra mark on board)', () => {
     const state = freshGame();
-    // Tamper: put X at (0,0) without a history entry
+    // Tamper: put X at (0,0) without a history entry.
     const tampered: GameState = {
       ...state,
       board: ['X', '', '', '', '', '', '', '', ''] as unknown as BoardSnapshot,
@@ -1063,10 +945,6 @@ describe('verifyInvariants — tampered states are caught', () => {
     expect(v.some((x) => x.invariant === 'WINNING_LINE_CELLS_MATCH_WINNER')).toBe(true);
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 12. Pure helper tests
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('detectWin', () => {
   it('returns null on empty board', () => {
@@ -1241,15 +1119,8 @@ describe('ALL_WINNING_LINES', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 13. Property / invariant tests
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('property: every engine-produced state satisfies all invariants', () => {
-  /**
-   * Run verifyInvariants after every single move in a complete game.
-   * If any violation is found at any intermediate step, the test fails.
-   */
+  // Fails if verifyInvariants reports a violation at any intermediate move.
   function assertInvariantsThroughout(
     movesSequence: [string, number, number][],
   ): void {
@@ -1371,11 +1242,9 @@ describe('property: cell contents are monotone (empty → X|O, never back to emp
     for (const [pid, r, c] of sequence) {
       const result = applyMove(state, move(pid, r, c, { timestamp: ++t }));
       if (!result.accepted) continue;
-      // All previously occupied cells must still be occupied
       for (const idx of occupied) {
         expect(result.newState.board[idx]).not.toBe('');
       }
-      // Record newly occupied cell
       occupied.add(r * 3 + c);
       state = result.newState;
     }

@@ -1,16 +1,6 @@
 /**
- * @file Board.tsx
- * @description 3×3 game board.
- *
- * Receives the display board (optimistic overlay already applied by the store),
- * the set of pending cell indices, winning cell indices, and click handler.
- *
- * Visual states per cell:
- *  - confirmed X / O  — server-authoritative mark
- *  - pending          — optimistic mark awaiting ACK (semi-transparent)
- *  - winning          — highlighted as part of the winning line
- *  - empty + clickable — hover effect on legal cells
- *  - empty + disabled  — no hover (not your turn / game over)
+ * 3×3 game board. Receives the display board with the optimistic overlay
+ * already applied by the store, plus pending/winning cell indices.
  */
 
 import React from 'react';
@@ -51,9 +41,6 @@ export function Board({
             const value     = getCell(board, row, col);
             const isPending = pendingIndices.has(idx);
             const isWinning = winningIndices.has(idx);
-            // A cell is clickable when:
-            //  - canMove is true (it's our turn, game active)
-            //  - the cell is empty AND not already pending
             const isClickable = canMove && value === '' && !isPending;
 
             return (

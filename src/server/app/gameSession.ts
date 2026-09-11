@@ -1,19 +1,7 @@
 /**
- * @file gameSession.ts
- * @description GameSession — the stateful owner of one active Tic-Tac-Toe match.
- *
- * Responsibilities:
- *  - Own the authoritative GameState (delegated to the engine).
- *  - Maintain the per-session sessionSeq counter.
- *  - Process engine commands and translate engine events → wire events.
- *  - Manage the reconnect window timer for disconnected players.
- *  - Manage the rematch proposal state and expiry timer.
- *  - Emit wire events via a callback so the transport layer stays decoupled.
- *
- * Architecture rules:
- *  - No WebSocket or HTTP imports.
- *  - No database calls.
- *  - The send callback is the only coupling to the transport layer.
+ * GameSession — the stateful owner of one Tic-Tac-Toe match: authoritative game
+ * state, sequence counter, reconnect/rematch timers, and wire-event emission via
+ * a send callback (the only coupling to the transport layer).
  */
 
 import type {
@@ -35,6 +23,7 @@ import {
   makeGameFinished, makeGameStarted,
   makeRematchRequested, makeRematchDeclined, makeRematchExpired,
   makeOpponentDisconnected, makeOpponentReconnected,
+  makePlayerLeft,
   makeErrorEvent,
 } from '../utils/eventFactory.js';
 import { generateGameId } from '../utils/idGenerator.js';
@@ -42,10 +31,6 @@ import { logger } from '../utils/logger.js';
 import type { RoomRecord, PlayerSlot } from './roomStore.js';
 import { getSymbolForPlayer, getOpponentSlot } from './roomStore.js';
 import type { CompletedGameRecord, HistoryRepository } from './historyRepository.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** A serialisable wire event — any object ready to JSON.stringify. */
 export type WireEvent = Record<string, unknown>;
@@ -64,6 +49,13 @@ export type SendFn = (
   event: WireEvent,
 ) => void;
 
+/**
+ * Called by GameSession when a player's reconnect window expires and their
+ * slot should be freed at the room/session layer (which GameSession has no
+ * direct reference to).
+ */
+export type OnPlayerLeftFn = (playerId: PlayerId) => void;
+
 export type RematchProposal = {
   requestedBy: PlayerSymbol;
   requestedAt: number;
@@ -72,29 +64,37 @@ export type RematchProposal = {
   timer:       ReturnType<typeof setTimeout>;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GameSession
-// ─────────────────────────────────────────────────────────────────────────────
-
 export class GameSession {
   private gameState:      GameState | null = null;
   private sessionSeq:     number = 0;
   private rematch:        RematchProposal | null = null;
   private readonly completedGames: CompletedGameRecord[];
-  private readonly replayBuffer: AnyRoomEvent[] = [];
+  /**
+   * Each entry stores the event together with its delivery metadata so that
+   * getReplayEvents can return only the events a specific player would have
+   * originally received (fixing the ROADMAP #1 / #2 recipient-scoping bug).
+   *
+   * target semantics (mirrors SendFn):
+   *   'broadcast' → both players receive it
+   *   'player'    → only anchorPlayerId receives it
+   *   'others'    → everyone EXCEPT anchorPlayerId receives it
+   */
+  private readonly replayBuffer: Array<{
+    event:           AnyRoomEvent;
+    target:          'player' | 'broadcast' | 'others';
+    anchorPlayerId:  PlayerId;
+  }> = [];
 
-  /** reconnect timers keyed by playerId */
   private reconnectTimers = new Map<PlayerId, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly roomId:   RoomId,
     private readonly send:     SendFn,
     private readonly historyRepository: HistoryRepository,
+    private readonly onPlayerLeft?: OnPlayerLeftFn,
   ) {
     this.completedGames = [...historyRepository.loadCompletedGames(roomId)];
   }
-
-  // ── Sequence counter ──────────────────────────────────────────────────────
 
   private nextSeq(): number { return ++this.sessionSeq; }
 
@@ -106,8 +106,6 @@ export class GameSession {
   get currentSeq(): number { return this.sessionSeq; }
 
   allocateSequence(): number { return this.nextSeq(); }
-
-  // ── Game lifecycle ────────────────────────────────────────────────────────
 
   /**
    * Start a new game. Called by the room layer when both players are ready,
@@ -154,11 +152,9 @@ export class GameSession {
     logger.info('Game started', { roomId: this.roomId, gameId, firstTurn });
   }
 
-  // ── Move processing ───────────────────────────────────────────────────────
-
   /**
-   * Process a MAKE_MOVE command from the wire layer.
-   * Returns the gameId that was used, for deduplication caching.
+   * Process a MAKE_MOVE command; returns the mover's response event (ack or
+   * rejection) for dedup caching, or null when nothing should be cached.
    */
   handleMove(
     room: RoomRecord,
@@ -194,7 +190,6 @@ export class GameSession {
     });
 
     if (!result.accepted) {
-      // Send MOVE_REJECTED only to the mover
       const rejEvent = makeMoveRejected(
         this.roomId, state.gameId as GameId,
         position,
@@ -210,13 +205,11 @@ export class GameSession {
 
     this.gameState = result.newState;
 
-    // Find the MOVE_MADE engine event
     const moveEv = result.events.find((e) => e.kind === 'MOVE_MADE');
     if (!moveEv || moveEv.kind !== 'MOVE_MADE') return null;
 
     const ackSeq = this.nextSeq();
 
-    // MOVE_ACK → mover only
     const ack = makeMoveAck(
       this.roomId, state.gameId as GameId,
       position, moveEv.symbol,
@@ -225,7 +218,6 @@ export class GameSession {
     );
     this.emit('player', playerId, ack as unknown as WireEvent);
 
-    // MOVE_BROADCAST → everyone else
     const broadcast = makeMoveBroadcast(
       this.roomId, state.gameId as GameId,
       position, moveEv.symbol,
@@ -235,7 +227,6 @@ export class GameSession {
     );
     this.emit('others', playerId, broadcast as unknown as WireEvent);
 
-    // Check for game end
     const endEv = result.events.find((e) => e.kind === 'GAME_ENDED');
     if (endEv && endEv.kind === 'GAME_ENDED') {
       this.emitGameFinished(room, endEv.result, endEv.finalBoard, endEv.moveHistory, playerId);
@@ -243,8 +234,6 @@ export class GameSession {
 
     return ack as unknown as WireEvent;
   }
-
-  // ── Forfeit / abandon ─────────────────────────────────────────────────────
 
   handleForfeit(room: RoomRecord, playerId: PlayerId): void {
     if (!this.gameState || this.gameState.status !== 'ACTIVE') return;
@@ -320,8 +309,6 @@ export class GameSession {
     });
   }
 
-  // ── Rematch ───────────────────────────────────────────────────────────────
-
   handleRematchRequest(
     room: RoomRecord,
     playerId: PlayerId,
@@ -329,7 +316,7 @@ export class GameSession {
   ): boolean {
     const state = this.gameState;
     if (!state || state.status !== 'FINISHED' || state.gameId !== gameId) return false;
-    if (this.rematch) return false; // already pending
+    if (this.rematch) return false;
 
     const symbol = getSymbolForPlayer(room, playerId);
     if (!symbol) return false;
@@ -371,10 +358,10 @@ export class GameSession {
       clearTimeout(this.rematch.timer);
       this.rematch = null;
 
-      // Rematch: create new game with swapped first turn
+      // createRematch swaps the first turn relative to the finished game.
       const rematchResult = createRematch(state, generateGameId(), Date.now());
       const newFirstTurn  = firstTurnOverride ?? rematchResult.newState.firstTurn;
-      room.readySymbols   = new Set(); // reset ready state
+      room.readySymbols   = new Set();
       this.startGame(room, newFirstTurn);
     }
     return true;
@@ -409,21 +396,17 @@ export class GameSession {
     this.emit('broadcast', anyPlayer, event as unknown as WireEvent);
   }
 
-  // ── Reconnection window ───────────────────────────────────────────────────
-
   /**
-   * Start the 5-minute reconnect countdown for a disconnected player.
-   * If the window expires, the game is abandoned.
+   * Start the reconnect countdown for a disconnected player; the game is
+   * abandoned if the window (RECONNECT_WINDOW_MS) expires.
    */
   startReconnectWindow(room: RoomRecord, playerId: PlayerId): void {
-    // Clear any existing timer first
     this.clearReconnectWindow(playerId);
 
     const symbol   = getSymbolForPlayer(room, playerId);
     const opponent = getOpponentSlot(room, playerId);
     const deadline = Date.now() + RECONNECT_WINDOW_MS;
 
-    // Notify the remaining player
     if (symbol && opponent?.connected) {
       const event = makeOpponentDisconnected(
         this.roomId, symbol, deadline, this.nextSeq(),
@@ -432,19 +415,31 @@ export class GameSession {
     }
 
     const timer = setTimeout(() => {
-      // Window expired — abandon if game still active
       if (this.gameState?.status === 'ACTIVE') {
         this.handleAbandon(room, playerId);
       }
+
+      // Emit PLAYER_LEFT with reason DISCONNECT_TIMEOUT and free the slot
+      // at the room/session layer via the injected callback.
+      if (symbol) {
+        const leaveEvent = makePlayerLeft(
+          this.roomId,
+          playerId,
+          symbol,
+          'DISCONNECT_TIMEOUT',
+          this.nextSeq(),
+        );
+        this.emit('broadcast', playerId, leaveEvent as unknown as WireEvent);
+      }
+
+      this.onPlayerLeft?.(playerId);
       this.reconnectTimers.delete(playerId);
     }, RECONNECT_WINDOW_MS);
 
     this.reconnectTimers.set(playerId, timer);
   }
 
-  /**
-   * Cancel the reconnect window. Called when the player successfully reconnects.
-   */
+  /** Cancel the reconnect window when the player successfully reconnects. */
   clearReconnectWindow(playerId: PlayerId): void {
     const timer = this.reconnectTimers.get(playerId);
     if (timer !== undefined) {
@@ -463,20 +458,44 @@ export class GameSession {
     }
   }
 
-  // ── Accessors ─────────────────────────────────────────────────────────────
-
   get state(): GameState | null { return this.gameState; }
 
-  get activeGameId(): GameId | null {
-    return this.gameState ? this.gameState.gameId as GameId : null;
-  }
-
-  getReplayEvents(fromSeq: number): ReadonlyArray<AnyRoomEvent> | null {
+  /**
+   * Return the slice of buffered events that `requestingPlayerId` would have
+   * originally received (i.e. recipient-scoped replay).
+   *
+   * Returns null when the buffer no longer covers `fromSeq` (caller should
+   * fall back to a SNAPSHOT). Returns an empty array when fromSeq > currentSeq
+   * (nothing to catch up on).
+   *
+   * Filtering rules (mirrors SendFn target semantics):
+   *   'broadcast' → included for everyone
+   *   'player P'  → included only when requestingPlayerId === P
+   *   'others P'  → included only when requestingPlayerId !== P
+   */
+  getReplayEvents(fromSeq: number, requestingPlayerId: PlayerId): ReadonlyArray<AnyRoomEvent> | null {
     if (fromSeq > this.currentSeq) return [];
 
-    const expectedCount = this.currentSeq - fromSeq + 1;
-    const events = this.replayBuffer.filter((event) => event.sessionSeq >= fromSeq);
-    return events.length === expectedCount ? events : null;
+    const relevant = this.replayBuffer.filter((entry) => {
+      if (entry.event.sessionSeq < fromSeq) return false;
+      switch (entry.target) {
+        case 'broadcast': return true;
+        case 'player':    return entry.anchorPlayerId === requestingPlayerId;
+        case 'others':    return entry.anchorPlayerId !== requestingPlayerId;
+      }
+    });
+
+    // Verify the buffer still fully covers the requested range for this player.
+    // We do this by checking that the oldest relevant event's seq equals fromSeq
+    // (no gap at the start). If the buffer was trimmed and some events are gone,
+    // relevant[0].sessionSeq would be > fromSeq, meaning we can't give a
+    // complete replay — return null to signal fallback to SNAPSHOT.
+    const oldestInBuffer = this.replayBuffer[0];
+    if (oldestInBuffer && oldestInBuffer.event.sessionSeq > fromSeq) {
+      return null;
+    }
+
+    return relevant.map((e) => e.event);
   }
 
   get history(): ReadonlyArray<GameSummary> {
@@ -489,15 +508,17 @@ export class GameSession {
 
   get rematchPending(): boolean { return this.rematch !== null; }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
   private emit(
     target: 'player' | 'broadcast' | 'others',
     playerId: PlayerId,
     event: WireEvent,
   ): void {
     if (typeof event['sessionSeq'] === 'number' && event['type'] !== 'ERROR') {
-      this.replayBuffer.push(event as unknown as AnyRoomEvent);
+      this.replayBuffer.push({
+        event:          event as unknown as AnyRoomEvent,
+        target,
+        anchorPlayerId: playerId,
+      });
       if (this.replayBuffer.length > EVENT_BUFFER_SIZE) {
         this.replayBuffer.splice(0, this.replayBuffer.length - EVENT_BUFFER_SIZE);
       }

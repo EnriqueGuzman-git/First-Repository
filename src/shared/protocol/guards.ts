@@ -1,35 +1,11 @@
 /**
- * @file guards.ts
- * @description Runtime type guards for the complete Tic-Tac-Toe realtime
- * protocol (version 1).
+ * Runtime type guards for the Tic-Tac-Toe realtime protocol (v1), used at trust
+ * boundaries (server message router, client dispatcher).
  *
- * Every exported function follows the TypeScript type predicate pattern:
- *
- *   function isXxx(value: unknown): value is XxxType
- *
- * Usage at trust boundaries (server message router, client dispatcher):
- *
- *   const raw = JSON.parse(frame.data);
- *
- *   if (!isAnyCommand(raw)) {
- *     return sendError(conn, 'MALFORMED_MESSAGE');
- *   }
- *   // raw is now narrowed to AnyCommand
- *   switch (raw.type) {
- *     case CommandType.MAKE_MOVE: handleMakeMove(raw); break;
- *     ...
- *   }
- *
- * Design rules:
- *  - Guards are deliberately shallow: they check structural shape and the
- *    discriminant field only. Deep semantic validation (e.g. "is this
- *    position already occupied?") belongs in the game engine and validators.
- *  - Every guard for a concrete type is individually exported for targeted
- *    use in tests and error messages.
- *  - No guard throws — they return false for invalid input.
- *  - The file has zero side effects and no mutable state.
- *
- * @see types.ts, commands.ts, events.ts, errors.ts for the types being guarded.
+ * Guards are deliberately shallow: they check structural shape and the discriminant
+ * field only. Deep semantic validation (e.g. "is this cell already occupied?")
+ * belongs in the game engine and validators. No guard throws — invalid input
+ * returns false.
  */
 
 import { PROTOCOL_VERSION } from './types.js';
@@ -92,10 +68,6 @@ import type { ErrorEvent } from './errors.js';
 import { ERROR_META } from './errors.js';
 import type { ErrorCode } from './errors.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Primitive helpers (not exported — internal to this module)
-// ─────────────────────────────────────────────────────────────────────────────
-
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -128,10 +100,6 @@ const VALID_CELL_VALUES = new Set<CellValue>(['', 'X', 'O']);
 function isCellValue(v: unknown): v is CellValue {
   return isString(v) && VALID_CELL_VALUES.has(v as CellValue);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Domain primitive guards (exported for use in tests and validators)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Checks that a value is a valid { row, col } board position with both
@@ -172,16 +140,9 @@ export function isUuidLike(v: unknown): v is string {
   return isUuidV4(v);
 }
 
-/**
- * Checks that a value is either 'X' or 'O'.
- */
 export function isPlayerSymbol(v: unknown): v is 'X' | 'O' {
   return v === 'X' || v === 'O';
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Envelope guards
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Guards that the value has all fields required by BaseEnvelope.
@@ -205,9 +166,7 @@ export function isBaseEnvelope(v: unknown): v is BaseEnvelope {
  */
 export function isCommandEnvelope(v: unknown): v is CommandEnvelope {
   if (!isBaseEnvelope(v)) return false;
-  // CommandEnvelope adds commandId and sessionToken to BaseEnvelope.
-  // Cast to Record<string, unknown> to access these extra fields safely
-  // under noPropertyAccessFromIndexSignature.
+  // Cast to Record to access extra fields under noPropertyAccessFromIndexSignature.
   const r = v as Record<string, unknown>;
   return (
     isUuidLike(r['commandId']) &&
@@ -222,7 +181,6 @@ export function isCommandEnvelope(v: unknown): v is CommandEnvelope {
  */
 export function isEventEnvelope(v: unknown): v is EventEnvelope & Record<string, unknown> {
   if (!isBaseEnvelope(v)) return false;
-  // EventEnvelope adds sessionSeq and roomId to BaseEnvelope.
   const r = v as Record<string, unknown>;
   return (
     isNonNegativeInteger(r['sessionSeq']) &&
@@ -238,10 +196,6 @@ export function isEventEnvelope(v: unknown): v is EventEnvelope & Record<string,
 export function isGlobalEventEnvelope(v: unknown): v is GlobalEventEnvelope & Record<string, unknown> {
   return isBaseEnvelope(v);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Command guards — client→server
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function isAuthCommand(v: unknown): v is AuthCommand {
   if (!isCommandEnvelope(v)) return false;
@@ -358,10 +312,6 @@ export function isSyncRequestCommand(v: unknown): v is SyncRequestCommand {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AnyCommand top-level guard
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Entry-point guard at the server's WebSocket message handler.
  *
@@ -393,10 +343,6 @@ export function isAnyCommand(v: unknown): v is AnyCommand {
     default:                          return false;
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Event guards — server→client
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function isAuthAckEvent(v: unknown): v is AuthAckEvent {
   if (!isGlobalEventEnvelope(v)) return false;
@@ -652,10 +598,6 @@ export function isErrorEvent(v: unknown): v is ErrorEvent {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AnyEvent top-level guard
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Entry-point guard at the client's WebSocket message dispatcher.
  *
@@ -705,10 +647,6 @@ export function isAnyEvent(v: unknown): v is AnyEvent {
     default:                              return false;
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Narrow-from-parsed helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Parse a raw WebSocket frame string and narrow to AnyCommand.
@@ -777,10 +715,6 @@ export function parseEvent(
   if (isAnyEvent(parsed))   return { ok: true, event: parsed };
   return { ok: false };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ErrorCode guard
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Returns true if the string is a known ErrorCode value.

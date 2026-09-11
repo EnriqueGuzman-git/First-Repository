@@ -70,7 +70,3 @@ export class JsonHistoryRepository implements HistoryRepository {
     renameSync(temporaryPath, this.filePath);
   }
 }
-
-export function createEmptyHistoryRepository(): HistoryRepository {
-  return new JsonHistoryRepository(':memory:');
-}

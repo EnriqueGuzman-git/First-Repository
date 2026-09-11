@@ -1,24 +1,11 @@
 /**
- * @file events.ts
- * @description All server→client event types for the Tic-Tac-Toe realtime
- * protocol (version 1).
+ * Server→client event types for the Tic-Tac-Toe realtime protocol (v1).
  *
- * Design rules enforced here:
- *  - Room-scoped events extend EventEnvelope (carries sessionSeq + roomId).
- *  - Global events (pre-room or session-level) extend GlobalEventEnvelope.
- *  - Every room-scoped event carries enough data to stand alone: the client
- *    does not need to query prior events to understand the state transition.
- *  - No runtime logic lives here: this file is pure type declarations.
- *  - AnyEvent is the exhaustive discriminated union used at the client's
- *    message dispatcher entry point.
- *
- * Sequence number contract:
- *  - sessionSeq is monotonically increasing, scoped to a single game session.
- *  - It starts at 1 when the game session begins and resets to 1 on rematch.
- *  - A gap in sessionSeq means events were missed; client must send SYNC_REQUEST.
+ * Sequence number contract: sessionSeq is monotonically increasing, scoped to a
+ * single game session; it starts at 1 when the session begins and resets to 1 on
+ * rematch. A gap means events were missed and the client must send SYNC_REQUEST.
  *
  * @see PROTOCOL.md §11 for lifecycle documentation of each event.
- * @see types.ts for shared primitives and envelope definitions.
  */
 
 import type {
@@ -38,10 +25,6 @@ import type {
   GameStats,
   GameSummary,
 } from './types.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Event Type Literal Constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 export const EventType = {
   // Session / global
@@ -86,12 +69,8 @@ export const EventType = {
 
 export type EventTypeLiteral = typeof EventType[keyof typeof EventType];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.2  AUTH_ACK  (global — not room-scoped)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent in response to a successful AUTH command.
+ * §11.2 AUTH_ACK (global — not room-scoped). Sent in response to a successful AUTH command.
  * Transitions the connection from UNAUTHED → AUTHED.
  *
  * If existingRoom is non-null the client should immediately send RECONNECT
@@ -119,12 +98,8 @@ export type AuthAckEvent = GlobalEventEnvelope & {
   } | null;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.13  PONG  (global — not room-scoped)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Response to a PING command.
+ * §11.13 PONG (global — not room-scoped). Response to a PING command.
  * Client computes round-trip time as: rtt = Date.now() - pong.clientTime
  */
 export type PongEvent = GlobalEventEnvelope & {
@@ -135,12 +110,8 @@ export type PongEvent = GlobalEventEnvelope & {
   readonly serverTime: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.3  ROOM_JOINED / PLAYER_JOINED
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player who just joined.
+ * §11.3 ROOM_JOINED. Sent exclusively to the player who just joined.
  * Contains the full room state snapshot so the client can render immediately.
  *
  * sessionSeq starts at 1 for this player's session in this room.
@@ -168,12 +139,8 @@ export type PlayerJoinedEvent = EventEnvelope & {
   readonly connectedPlayerCount: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.4  ROOM_LEFT / PLAYER_LEFT
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player who just left.
+ * §11.4 ROOM_LEFT. Sent exclusively to the player who just left.
  * Confirms the LEAVE_ROOM command was processed.
  */
 export type RoomLeftEvent = EventEnvelope & {
@@ -201,12 +168,8 @@ export type PlayerLeftEvent = EventEnvelope & {
   readonly reason: 'VOLUNTARY' | 'DISCONNECT_TIMEOUT' | 'FORFEIT';
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.5  PLAYER_READY_ACK / OPPONENT_READY
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player who sent PLAYER_READY.
+ * §11.5 PLAYER_READY_ACK. Sent exclusively to the player who sent PLAYER_READY.
  * Confirms the server recorded their readiness.
  */
 export type PlayerReadyAckEvent = EventEnvelope & {
@@ -227,12 +190,8 @@ export type OpponentReadyEvent = EventEnvelope & {
   readonly readyPlayers: ReadonlyArray<PlayerSymbol>;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.6  GAME_STARTED
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broadcast to all players when the server starts a new game.
+ * §11.6 GAME_STARTED. Broadcast to all players when the server starts a new game.
  * Triggered automatically once both players have sent PLAYER_READY,
  * or when both players accept a rematch.
  *
@@ -260,12 +219,8 @@ export type GameStartedEvent = EventEnvelope & {
   readonly startedAt: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.8  MOVE_ACK
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player who made the move.
+ * §11.8 MOVE_ACK. Sent exclusively to the player who made the move.
  * Confirms the move was valid, applied, and the new board state.
  *
  * The client should use board to reconcile its optimistic state.
@@ -286,12 +241,8 @@ export type MoveAckEvent = EventEnvelope & {
   readonly nextTurn: PlayerSymbol | null;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.9  MOVE_BROADCAST
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broadcast to all players in the room EXCEPT the mover.
+ * §11.9 MOVE_BROADCAST. Broadcast to all players in the room EXCEPT the mover.
  *
  * Carries the same board state as MOVE_ACK so both players converge to an
  * identical view of the board after each move.
@@ -311,12 +262,8 @@ export type MoveBroadcastEvent = EventEnvelope & {
   readonly nextTurn: PlayerSymbol | null;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.10  MOVE_REJECTED
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player whose move was rejected.
+ * §11.10 MOVE_REJECTED. Sent exclusively to the player whose move was rejected.
  *
  * The client MUST roll back any optimistic UI update and re-render from
  * the board snapshot in this event (which reflects the true server state).
@@ -339,12 +286,8 @@ export type MoveRejectedEvent = EventEnvelope & {
   readonly currentTurn: PlayerSymbol;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.11  GAME_FINISHED
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broadcast to all players when the game ends for any reason.
+ * §11.11 GAME_FINISHED. Broadcast to all players when the game ends for any reason.
  *
  * Contains the complete authoritative game record: final board, full move
  * history, result, and stats. This is everything the client needs to render
@@ -363,12 +306,8 @@ export type GameFinishedEvent = EventEnvelope & {
   readonly stats: GameStats;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.12  REMATCH EVENTS
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broadcast to all players when one player requests a rematch.
+ * §11.12 REMATCH_REQUESTED. Broadcast to all players when one player requests a rematch.
  *
  * The non-requesting player should prompt the user to accept or decline.
  * The proposing player's client should show a "waiting" state.
@@ -405,12 +344,8 @@ export type RematchExpiredEvent = EventEnvelope & {
   readonly gameId: GameId;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.14  CONNECTION PRESENCE EVENTS
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Broadcast to remaining players when a player's connection is lost.
+ * §11.14 OPPONENT_DISCONNECTED. Broadcast to remaining players when a player's connection is lost.
  *
  * reconnectDeadlineAt: Unix epoch ms. If the disconnected player does not
  * reconnect by this time, GAME_FINISHED will be emitted with reason
@@ -440,12 +375,8 @@ export type OpponentReconnectedEvent = EventEnvelope & {
   readonly symbol: PlayerSymbol;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.14  RECONNECT_ACK
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent exclusively to the player who sent RECONNECT.
+ * §11.14 RECONNECT_ACK. Sent exclusively to the player who sent RECONNECT.
  *
  * Contains the full current room state so the client can restore its UI
  * without replaying all historical events.
@@ -464,12 +395,8 @@ export type ReconnectAckEvent = EventEnvelope & {
   readonly sessionSeq: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.15  STATE_SYNC
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * REPLAY mode: sent when the server can replay specific missed events.
+ * §11.15 STATE_SYNC REPLAY mode: sent when the server can replay specific missed events.
  *
  * Conditions:
  *  - The requested gap is ≤ EVENT_BUFFER_SIZE (500) events.
@@ -513,10 +440,6 @@ export type StateSyncSnapshotEvent = EventEnvelope & {
 
 /** Union of both STATE_SYNC modes. Discriminated by `mode`. */
 export type StateSyncEvent = StateSyncReplayEvent | StateSyncSnapshotEvent;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Exhaustive Unions
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * All events that are scoped to a room and carry sessionSeq.
@@ -567,10 +490,6 @@ export type AnyEvent = AnyRoomEvent | AnyGlobalEvent;
  * type Move = EventByType<'MOVE_BROADCAST'>; // → MoveBroadcastEvent
  */
 export type EventByType<T extends EventTypeLiteral> = Extract<AnyEvent, { type: T }>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Game History — HTTP (non-realtime)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Shape of the HTTP GET /api/rooms/:roomId/history response body.

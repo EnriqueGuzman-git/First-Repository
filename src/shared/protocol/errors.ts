@@ -1,15 +1,6 @@
 /**
- * @file errors.ts
- * @description Error codes and the ERROR event type for the Tic-Tac-Toe
- * realtime protocol (version 1).
- *
- * Design rules:
- *  - ErrorCode is a string literal union — exhaustive and explicit.
- *  - Every code maps to a single recoverable/non-recoverable classification.
- *  - The ErrorEvent is a discriminated member of AnyEvent.
- *  - No runtime logic lives here: this file is pure type declarations
- *    except for the ErrorCodeMeta lookup table, which is intentionally
- *    kept here so client and server share identical behaviour metadata.
+ * Error codes and the ERROR event type for the Tic-Tac-Toe realtime protocol (v1).
+ * The ERROR_META table is kept here so client and server share identical behaviour metadata.
  *
  * @see PROTOCOL.md §11.16 and §16 for the full error catalog.
  */
@@ -17,13 +8,7 @@
 import type { GlobalEventEnvelope } from './types.js';
 import type { EventType } from './events.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Error Code Catalog
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Authentication and session errors.
- */
+/** Authentication and session errors. */
 export type AuthErrorCode =
   | 'AUTH_TIMEOUT'          // No AUTH received within AUTH_TIMEOUT_MS after WebSocket open
   | 'AUTH_FAILED'           // Invalid or expired guestToken
@@ -83,10 +68,6 @@ export type ErrorCode =
   | ProtocolErrorCode
   | ServerErrorCode;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Recoverability Metadata
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Per-code behaviour metadata shared by client and server.
  *
@@ -113,7 +94,6 @@ export type ErrorMeta = {
 };
 
 export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
-  // ── Auth ──────────────────────────────────────────────────────────────────
   AUTH_TIMEOUT: {
     recoverable: false, closesConnection: true, clientShouldRetry: false,
     summary: 'No AUTH command received within the time limit after WebSocket open.',
@@ -135,7 +115,6 @@ export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
     summary: 'The same session token is already in use on another connection.',
   },
 
-  // ── Room ──────────────────────────────────────────────────────────────────
   ROOM_NOT_FOUND: {
     recoverable: true, closesConnection: false, clientShouldRetry: false,
     summary: 'No room exists with the given roomId.',
@@ -157,7 +136,6 @@ export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
     summary: 'This command requires the player to be in a room.',
   },
 
-  // ── Game ──────────────────────────────────────────────────────────────────
   GAME_NOT_ACTIVE: {
     recoverable: true, closesConnection: false, clientShouldRetry: false,
     summary: 'This command requires the game to be in ACTIVE status.',
@@ -195,7 +173,6 @@ export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
     summary: 'The session token is not associated with the given roomId.',
   },
 
-  // ── Protocol ──────────────────────────────────────────────────────────────
   PROTOCOL_VERSION_MISMATCH: {
     recoverable: false, closesConnection: true, clientShouldRetry: false,
     summary: 'The protocolVersion field does not match the server\'s supported version.',
@@ -221,7 +198,6 @@ export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
     summary: 'Authorization failed for this command (e.g. acting as another player).',
   },
 
-  // ── Server ────────────────────────────────────────────────────────────────
   INTERNAL_ERROR: {
     recoverable: true, closesConnection: false, clientShouldRetry: true,
     summary: 'An unexpected server error occurred. A traceId is provided in data for support.',
@@ -231,10 +207,6 @@ export const ERROR_META: Readonly<Record<ErrorCode, ErrorMeta>> = {
     summary: 'The server is shutting down. Reconnect in a few seconds.',
   },
 } as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ERROR Event Type
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Sent by the server when a command fails or a session-level problem occurs.
@@ -269,10 +241,6 @@ export type ErrorEvent = GlobalEventEnvelope & {
   /** Structured context relevant to the specific error code. */
   readonly data?: Readonly<Record<string, unknown>>;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Utility: Check recoverability at runtime
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Returns true if the given error code indicates a recoverable condition.

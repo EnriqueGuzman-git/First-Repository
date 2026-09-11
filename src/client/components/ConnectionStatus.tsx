@@ -1,19 +1,11 @@
 /**
- * @file ConnectionStatus.tsx
- * @description Live WebSocket state indicator with RTT display.
- *
- * Renders a small pill in the top-right corner.
- * When reconnecting, renders a full-screen overlay so the user cannot
- * interact with a stale board.
+ * Live WebSocket state indicator with RTT display: a pill in the corner, plus
+ * a full-screen reconnecting overlay that blocks interaction with a stale board.
  */
 
 import React, { useEffect, useState } from 'react';
 import type { WsState } from '../lib/wsClient';
 import type { LatencyMetrics } from '../store/gameStore';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pill
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface ConnectionPillProps {
   wsState: WsState;
@@ -36,10 +28,6 @@ export function ConnectionPill({ wsState, latency }: ConnectionPillProps) {
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Reconnecting overlay
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface ReconnectingOverlayProps {
   visible: boolean;
@@ -68,10 +56,6 @@ export function ReconnectingOverlay({ visible }: ReconnectingOverlayProps) {
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper
-// ─────────────────────────────────────────────────────────────────────────────
 
 function wsStateLabel(state: WsState): string {
   switch (state) {

@@ -1,26 +1,6 @@
 /**
- * @file engine.ts
- * @description Deterministic Tic-Tac-Toe game engine.
- *
- * Core contract:
- *
- *   applyMove(state, command) → { newState, events, accepted, rejectionReason }
- *
- * Guarantees:
- *  - Pure functions. No I/O, no randomness, no external state.
- *  - Deterministic: same (state, command) pair always produces identical output.
- *  - Immutable: every function returns a new value; inputs are never mutated.
- *  - Framework-free: no HTTP, no WebSocket, no database, no React.
- *  - Independently testable in isolation from the rest of the system.
- *  - A sequence of valid commands replayed in order always reconstructs the
- *    same final GameState regardless of when or where replay occurs.
- *
- * Dependency surface:
- *  - Only imports from the shared protocol types (zero-dependency, type-only).
- *  - All runtime values are plain TypeScript with no npm dependencies.
- *
+ * Deterministic, pure, immutable Tic-Tac-Toe game engine.
  * @see PROTOCOL.md for the full specification.
- * @see engine.test.ts for exhaustive behavioural tests.
  */
 
 import type {
@@ -40,47 +20,25 @@ import {
   positionToIndex,
 } from '../../shared/protocol/types.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Engine-internal types
-// These are distinct from the protocol wire types: they carry richer
-// server-side data and are never serialised directly.
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * The complete, authoritative state of one Tic-Tac-Toe game.
  * Immutable once returned — every state transition produces a new object.
  */
 export type GameState = {
-  /** Unique identifier for this game instance. Provided by the caller. */
   readonly gameId: string;
-  /** Identifies which room this game belongs to. */
   readonly roomId: string;
-  /** Player ID of the player assigned symbol X. */
   readonly playerX: string;
-  /** Player ID of the player assigned symbol O. */
   readonly playerO: string;
-  /**
-   * Flat 9-element board. Index = row * 3 + col.
-   * Identical layout to BoardSnapshot in the protocol.
-   */
+  /** Flat 9-element board. Index = row * 3 + col. */
   readonly board: BoardSnapshot;
-  /** Whose turn it currently is. Always 'X' | 'O' when status is ACTIVE. */
   readonly currentTurn: PlayerSymbol;
-  /** Lifecycle status of this game. */
   readonly status: GameStatus;
   /** Non-null only when status === 'FINISHED'. */
   readonly result: GameResult | null;
-  /**
-   * Ordered history of every accepted move, oldest first.
-   * Length equals the number of marks on the board.
-   */
+  /** Ordered history of every accepted move, oldest first. */
   readonly moveHistory: readonly MoveRecord[];
-  /**
-   * Which symbol moves first in this game.
-   * X for game 1; alternates on rematch.
-   */
+  /** Which symbol moves first. X for game 1; alternates on rematch. */
   readonly firstTurn: PlayerSymbol;
-  /** Epoch ms when the engine created this game state. */
   readonly createdAt: number;
   /** Epoch ms of the first accepted move, or null before any move. */
   readonly firstMoveAt: number | null;
@@ -91,9 +49,8 @@ export type GameState = {
 export type GameStatus = 'WAITING' | 'ACTIVE' | 'FINISHED';
 
 /**
- * A command the engine can process.
- * The engine only understands game-level actions; authentication and
- * networking concerns are stripped before this layer is reached.
+ * A command the engine can process. Only game-level actions; authentication
+ * and networking concerns are stripped before this layer is reached.
  */
 export type EngineCommand =
   | StartGameCommand
@@ -134,10 +91,6 @@ export type AbandonCommand = {
   readonly timestamp: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Engine events
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Events emitted as a result of processing a command.
  * The session layer translates these into wire protocol events.
@@ -174,10 +127,6 @@ export type GameEndedEngineEvent = {
   readonly moveHistory: readonly MoveRecord[];
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Command result types
-// ─────────────────────────────────────────────────────────────────────────────
-
 export type StartGameResult = {
   readonly newState: GameState;
   readonly events: readonly [GameStartedEngineEvent];
@@ -207,11 +156,6 @@ export type AbandonResult = {
   readonly events: readonly [GameEndedEngineEvent];
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// All winning line definitions
-// Computed once at module load; never mutated.
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * All 8 possible winning lines on a 3×3 board.
  * Ordered: 3 rows, 3 columns, 2 diagonals.
@@ -230,14 +174,7 @@ export const ALL_WINNING_LINES: readonly WinningLine[] = [
   { type: 'diagonal', positions: [{ row: 0, col: 2 }, { row: 1, col: 1 }, { row: 2, col: 0 }] },
 ] as const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pure helper functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Apply a single mark to a board snapshot.
- * Returns a new BoardSnapshot; the input is never mutated.
- */
+/** Apply a single mark to a board snapshot; input is never mutated. */
 export function applyMarkToBoard(
   board: BoardSnapshot,
   row: BoardIndex,
@@ -250,22 +187,15 @@ export function applyMarkToBoard(
 }
 
 /**
- * Safe indexed read from a BoardSnapshot.
- * positionToIndex(BoardIndex, BoardIndex) always yields a value in [0, 8],
- * which is within the 9-element tuple.  The type system cannot prove this
- * automatically under noUncheckedIndexedAccess, so we centralise the cast
- * here and validate it with the BoardIndex type constraint.
+ * Safe indexed read from a BoardSnapshot. A BoardIndex-derived index is always
+ * in [0, 8], but noUncheckedIndexedAccess can't prove it, so the cast is
+ * centralised here.
  */
 function boardAt(board: BoardSnapshot, index: number): CellValue {
   return board[index] as CellValue;
 }
 
-/**
- * Check whether a given symbol has won on the provided board.
- * Returns the matching WinningLine, or null if no win.
- *
- * Checks all 8 lines exactly once — O(1).
- */
+/** Returns the matching WinningLine for the symbol, or null if no win. */
 export function detectWin(
   board: BoardSnapshot,
   symbol: PlayerSymbol,
@@ -283,25 +213,16 @@ export function detectWin(
   return null;
 }
 
-/**
- * Returns true when all 9 cells are occupied (used to detect draw).
- * Call only after confirming no winner exists.
- */
+/** True when all 9 cells are occupied. Call only after confirming no winner. */
 export function isBoardFull(board: BoardSnapshot): boolean {
   return board.every((cell) => cell !== '');
 }
 
-/**
- * Returns the opponent of the given symbol.
- */
 export function opponent(symbol: PlayerSymbol): PlayerSymbol {
   return symbol === 'X' ? 'O' : 'X';
 }
 
-/**
- * Validate the raw row/col numbers from a command without relying on branded
- * BoardIndex types. Used before any board access.
- */
+/** Validate raw row/col from a command before trusting them as BoardIndex. */
 export function isValidPosition(row: number, col: number): row is BoardIndex {
   return (
     Number.isInteger(row) &&
@@ -311,10 +232,7 @@ export function isValidPosition(row: number, col: number): row is BoardIndex {
   );
 }
 
-/**
- * Reconstruct a BoardSnapshot from scratch by replaying an ordered move
- * history. Used for invariant verification.
- */
+/** Reconstruct a BoardSnapshot by replaying an ordered move history. */
 export function boardFromHistory(history: readonly MoveRecord[]): BoardSnapshot {
   let board: BoardSnapshot = EMPTY_BOARD;
   for (const record of history) {
@@ -328,16 +246,11 @@ export function boardFromHistory(history: readonly MoveRecord[]): BoardSnapshot 
   return board;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Engine entry points
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * Create the initial GameState for a new game.
  *
- * The returned state has status 'ACTIVE' because both players are assumed
- * ready before the engine is called (the session layer handles readiness
- * gating). The engine does not model the WAITING→ACTIVE transition — that
+ * State starts 'ACTIVE': both players are assumed ready before the engine is
+ * called. The engine does not model the WAITING→ACTIVE transition — that
  * belongs to the room/session layer.
  */
 export function startGame(command: StartGameCommand): StartGameResult {
@@ -390,17 +303,14 @@ export function applyMove(
   state: GameState,
   command: MakeMoveCommand,
 ): MakeMoveResult {
-  // ── Guard 1: game must be active ────────────────────────────────────────
   if (state.status !== 'ACTIVE') {
     return reject(state, 'GAME_NOT_ACTIVE');
   }
 
-  // ── Guard 2 + 3: resolve the moving player's symbol and verify turn ─────
   const movingSymbol = resolveSymbol(state, command.playerId);
   if (movingSymbol === null) {
-    // Player is not in this game — treat as UNAUTHORIZED at the session layer.
-    // The engine returns GAME_NOT_ACTIVE as a safe fallback; the session layer
-    // should catch unknown players before reaching the engine.
+    // Unknown player: fall back to GAME_NOT_ACTIVE. The session layer should
+    // catch unknown players as UNAUTHORIZED before reaching the engine.
     return reject(state, 'GAME_NOT_ACTIVE');
   }
 
@@ -408,7 +318,6 @@ export function applyMove(
     return reject(state, 'NOT_YOUR_TURN');
   }
 
-  // ── Guard 4: bounds check ────────────────────────────────────────────────
   if (!isValidPosition(command.row, command.col)) {
     return reject(state, 'OUT_OF_BOUNDS');
   }
@@ -416,12 +325,10 @@ export function applyMove(
   const row = command.row as BoardIndex;
   const col = command.col as BoardIndex;
 
-  // ── Guard 5: cell must be empty ──────────────────────────────────────────
   if (boardAt(state.board, positionToIndex(row, col)) !== '') {
     return reject(state, 'CELL_OCCUPIED');
   }
 
-  // ── Apply the move ───────────────────────────────────────────────────────
   const newBoard = applyMarkToBoard(state.board, row, col, movingSymbol);
 
   const moveRecord: MoveRecord = {
@@ -433,11 +340,9 @@ export function applyMove(
 
   const newHistory = [...state.moveHistory, moveRecord];
 
-  // ── Check for game end ───────────────────────────────────────────────────
   const winLine = detectWin(newBoard, movingSymbol);
 
   if (winLine !== null) {
-    // Win
     const result: GameResult = {
       outcome:     'WIN',
       winner:      movingSymbol,
@@ -485,7 +390,6 @@ export function applyMove(
   }
 
   if (isBoardFull(newBoard)) {
-    // Draw
     const result: GameResult = {
       outcome:     'DRAW',
       winner:      null,
@@ -532,7 +436,6 @@ export function applyMove(
     };
   }
 
-  // ── Game continues ───────────────────────────────────────────────────────
   const nextTurn = opponent(movingSymbol);
 
   const continuingState: GameState = {
@@ -683,10 +586,7 @@ export type ReplayResult =
       readonly events: readonly EngineEvent[];
     };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Invariant verifiers
-// Used in tests and optionally as runtime assertions in development.
-// ─────────────────────────────────────────────────────────────────────────────
+// Invariant verifiers: used in tests and optionally as runtime assertions in development.
 
 export type InvariantViolation = {
   readonly invariant: string;
@@ -695,23 +595,7 @@ export type InvariantViolation = {
 
 /**
  * Verify all engine invariants against a GameState.
- * Returns an array of violations. An empty array means the state is valid.
- *
- * Invariants checked:
- *  1.  No cell contains both players simultaneously.
- *  2.  Move history length equals the number of marks on the board.
- *  3.  Move history symbols alternate correctly (X first, then O, etc.).
- *  4.  currentTurn is correct given the move history length.
- *  5.  Board is exactly derivable from the move history.
- *  6.  A FINISHED game with a winner has a valid winning line.
- *  7.  A FINISHED game with winner=null has outcome DRAW/FORFEIT/ABANDONED.
- *  8.  A FINISHED game with outcome WIN has a non-null winner.
- *  9.  Move history is monotonically increasing (sequenceInGame = i+1).
- *  10. firstMoveAt is null iff moveHistory is empty.
- *  11. endedAt is non-null iff status is FINISHED.
- *  12. A FINISHED game with outcome DRAW has a full board.
- *  13. A FINISHED game with outcome WIN has a winningLine whose cells all
- *      match the winner's symbol.
+ * Returns an array of violations; an empty array means the state is valid.
  */
 export function verifyInvariants(state: GameState): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
@@ -845,10 +729,6 @@ export function verifyInvariants(state: GameState): InvariantViolation[] {
 
   return violations;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Private helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function resolveSymbol(state: GameState, playerId: string): PlayerSymbol | null {
   if (playerId === state.playerX) return 'X';

@@ -1,31 +1,6 @@
 /**
- * @file server.integration.test.ts
- * @description Integration tests for the realtime game server.
- *
- * These tests spin up a real HTTP+WebSocket server on a random port, connect
- * two WebSocket clients through the full protocol stack, and verify end-to-end
- * behaviour including:
- *
- *  - Connection handshake and AUTH
- *  - Room creation (via HTTP) and join (via WebSocket)
- *  - PLAYER_READY → GAME_STARTED auto-trigger
- *  - Complete game play to X win, O win, and draw
- *  - Invalid move rejection (wrong turn, occupied cell)
- *  - MAKE_MOVE idempotency (same commandId retried)
- *  - LEAVE_ROOM during active game → FORFEIT
- *  - Disconnect → reconnect → state restoration
- *  - Rematch flow (request → accept → new game)
- *  - PING → PONG heartbeat
- *  - Rate limiting (burst of messages)
- *  - Unauthenticated command rejection
- *  - Protocol version mismatch rejection
- *  - Malformed message rejection
- *
- * Architecture:
- *  - Uses the real `ws` client library (same as production).
- *  - Each test creates its own server instance on a random port (port 0).
- *  - TestClient wraps a WebSocket with async message waiting.
- *  - All tests are self-contained and isolated.
+ * Integration tests for the realtime game server: spins up a real HTTP+WebSocket
+ * server on a random port and drives two clients through the full protocol stack.
  */
 
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
@@ -36,10 +11,6 @@ import { buildServer } from '../index.js';
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL } from '../../shared/protocol/types.js';
 import { EventType } from '../../shared/protocol/events.js';
 import { CommandType } from '../../shared/protocol/commands.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TestClient — async WebSocket wrapper
-// ─────────────────────────────────────────────────────────────────────────────
 
 type AnyObject = Record<string, unknown>;
 
@@ -63,7 +34,6 @@ class TestClient {
     this.ws.on('close', (code) => {
       this.closed    = true;
       this.closeCode = code;
-      // Reject any waiting promises
       for (const w of this.waiters) {
         w({ type: '__CLOSED__', code } as AnyObject);
       }
@@ -112,7 +82,6 @@ class TestClient {
       if (remaining <= 0) throw new Error(`Timeout waiting for ${type}`);
       const msg = await this.next(remaining);
       if ((msg['type'] as string) === type) return msg;
-      // Discard and wait for next
     }
   }
 
@@ -126,10 +95,6 @@ class TestClient {
     this.received = [];
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function makeEnvelope(type: string, extra: AnyObject = {}): AnyObject {
   return {
@@ -204,10 +169,6 @@ function syncRequestCmd(sessionToken: string, roomId: string, fromSeq: number): 
   return makeEnvelope(CommandType.SYNC_REQUEST, { sessionToken, roomId, fromSeq });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Test setup / teardown
-// ─────────────────────────────────────────────────────────────────────────────
-
 type ServerHandle = {
   url:     string;
   apiUrl:  string;
@@ -235,10 +196,7 @@ async function createRoom(apiUrl: string): Promise<string> {
   return body.roomId;
 }
 
-/**
- * Connect a client, wait for open, then authenticate.
- * Returns { client, sessionToken, playerId }.
- */
+/** Connect a client, wait for open, then authenticate. */
 async function connectAndAuth(
   url: string,
   guestToken: string | null = null,
@@ -302,10 +260,6 @@ async function startGame(
   return { gameId: gs1['gameId'] as string, firstTurn: gs1['firstTurn'] as string };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe('Integration: WebSocket protocol', () => {
   let server: ServerHandle;
 
@@ -316,8 +270,6 @@ describe('Integration: WebSocket protocol', () => {
   afterEach(async () => {
     await server.close();
   });
-
-  // ── 1. Handshake ───────────────────────────────────────────────────────────
 
   describe('Connection handshake', () => {
     it('server accepts connection with ttt-v1 subprotocol', async () => {
@@ -377,7 +329,6 @@ describe('Integration: WebSocket protocol', () => {
       const client = new TestClient(server.url);
       await client.waitOpen();
 
-      // Send JOIN_ROOM without AUTH
       client.send({
         protocolVersion: PROTOCOL_VERSION,
         messageId:       randomUUID(),
@@ -397,7 +348,6 @@ describe('Integration: WebSocket protocol', () => {
     it('malformed JSON returns MALFORMED_MESSAGE', async () => {
       const client = new TestClient(server.url);
       await client.waitOpen();
-      // Send raw non-JSON
       (client as unknown as { ws: WebSocket })['ws'].send('not json at all');
       const err = await client.nextOfType(EventType.ERROR);
       expect(err['code']).toBe('MALFORMED_MESSAGE');
@@ -426,8 +376,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 2. PING / PONG ─────────────────────────────────────────────────────────
-
   describe('Heartbeat', () => {
     it('PING returns PONG with echoed clientTime', async () => {
       const { client, sessionToken } = await connectAndAuth(server.url);
@@ -440,8 +388,6 @@ describe('Integration: WebSocket protocol', () => {
       client.close();
     });
   });
-
-  // ── 3. Room flow ───────────────────────────────────────────────────────────
 
   describe('Room management', () => {
     it('POST /api/rooms creates a room with 8-char ID', async () => {
@@ -513,8 +459,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 4. Game start ──────────────────────────────────────────────────────────
-
   describe('Game start', () => {
     it('both PLAYER_READY triggers GAME_STARTED broadcast', async () => {
       const { p1, p1Token, p2, p2Token, roomId } =
@@ -568,8 +512,6 @@ describe('Integration: WebSocket protocol', () => {
       p2.close();
     });
   });
-
-  // ── 5. Move flow ───────────────────────────────────────────────────────────
 
   describe('Move processing', () => {
     it('valid move returns MOVE_ACK to mover and MOVE_BROADCAST to opponent', async () => {
@@ -664,8 +606,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 6. Complete game scenarios ─────────────────────────────────────────────
-
   describe('Complete game — X wins top row', () => {
     it('emits GAME_FINISHED with winner X', async () => {
       const { p1, p1Token, p2, p2Token, roomId } =
@@ -683,13 +623,10 @@ describe('Integration: WebSocket protocol', () => {
 
       for (const [client, token, row, col] of moves) {
         client.send(makeMoveCmd(token, roomId, gameId, row, col));
-        // Wait for ack on mover's side
         const ev = await client.nextOfType(EventType.MOVE_ACK);
-        // Discard opponent broadcast
         const other = client === p1 ? p2 : p1;
         await other.nextOfType(EventType.MOVE_BROADCAST);
 
-        // Check if game ended
         if ((ev['nextTurn'] as string | null) === null) break;
       }
 
@@ -775,8 +712,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 7. Forfeit ─────────────────────────────────────────────────────────────
-
   describe('Forfeit', () => {
     it('LEAVE_ROOM during active game emits GAME_FINISHED FORFEIT', async () => {
       const { p1, p1Token, p2, p2Token, roomId } =
@@ -791,8 +726,6 @@ describe('Integration: WebSocket protocol', () => {
       p1.close(); p2.close();
     });
   });
-
-  // ── 8. Disconnect / reconnect ──────────────────────────────────────────────
 
   describe('Disconnect and reconnect', () => {
     it('reconnect restores game state', async () => {
@@ -843,8 +776,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 9. State synchronization ─────────────────────────────────────────────
-
   describe('State synchronization', () => {
     it('SYNC_REQUEST replays buffered room events when the range is available', async () => {
       const { p1, p1Token, p2, p2Token, roomId } =
@@ -855,6 +786,10 @@ describe('Integration: WebSocket protocol', () => {
       await p1.nextOfType(EventType.MOVE_ACK);
       await p2.nextOfType(EventType.MOVE_BROADCAST);
 
+      // P1 requests a replay from seq 1.
+      // P1's recipient-scoped view: GAME_STARTED (broadcast, seq 1) + MOVE_ACK
+      // (player-P1, seq 2). MOVE_BROADCAST (others-P1, seq 3) is NOT included
+      // because it was addressed to P2 only — that's the recipient-scoping fix.
       p1.send(syncRequestCmd(p1Token, roomId, 1));
       const sync = await p1.nextOfType(EventType.STATE_SYNC);
       const replayEvents = sync['events'] as Array<{ type: string; sessionSeq: number }>;
@@ -865,9 +800,10 @@ describe('Integration: WebSocket protocol', () => {
       expect(replayEvents.map((event) => event.type)).toEqual([
         EventType.GAME_STARTED,
         EventType.MOVE_ACK,
-        EventType.MOVE_BROADCAST,
+        // MOVE_BROADCAST (seq 3) is intentionally absent: it was addressed to
+        // P2 ('others P1'), so P1's replay correctly omits it.
       ]);
-      expect(replayEvents.map((event) => event.sessionSeq)).toEqual([1, 2, 3]);
+      expect(replayEvents.map((event) => event.sessionSeq)).toEqual([1, 2]);
 
       p1.close();
       p2.close();
@@ -876,6 +812,8 @@ describe('Integration: WebSocket protocol', () => {
     it('SYNC_REQUEST returns the current authoritative snapshot', async () => {
       const { p1, p1Token, p2, roomId } = await setupRoom(server.url, server.apiUrl);
 
+      // No game has started yet (sessionSeq = 0). Asking from seq 1 with no
+      // replay events available falls through to SNAPSHOT mode.
       p1.send(syncRequestCmd(p1Token, roomId, 1));
       const sync = await p1.nextOfType(EventType.STATE_SYNC);
 
@@ -888,8 +826,6 @@ describe('Integration: WebSocket protocol', () => {
       p2.close();
     });
   });
-
-  // ── 10. Rematch ────────────────────────────────────────────────────────────
 
   describe('Rematch', () => {
     async function finishGame(
@@ -975,8 +911,6 @@ describe('Integration: WebSocket protocol', () => {
     });
   });
 
-  // ── 10. Rate limiting ──────────────────────────────────────────────────────
-
   describe('Rate limiting', () => {
     it('flooding 70 messages in 10s returns RATE_LIMITED', async () => {
       const { client, sessionToken } = await connectAndAuth(server.url);
@@ -1004,8 +938,6 @@ describe('Integration: WebSocket protocol', () => {
       client.close();
     });
   });
-
-  // ── 11. HTTP endpoints ─────────────────────────────────────────────────────
 
   describe('HTTP endpoints', () => {
     it('grants CORS only to configured browser origins', async () => {
@@ -1082,8 +1014,6 @@ describe('Integration: WebSocket protocol', () => {
       expect(Array.isArray(body.games)).toBe(true);
     });
   });
-
-  // ── 12. Server-authoritative: client cannot bypass turn order ─────────────
 
   describe('Server-authoritative enforcement', () => {
     it('X cannot make two moves in a row', async () => {

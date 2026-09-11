@@ -1,17 +1,9 @@
 /**
- * @file types.ts
- * @description Primitive types, enumerations, and envelope definitions for the
- * Tic-Tac-Toe realtime protocol (version 1).
- *
- * This file must remain framework-agnostic and have zero runtime dependencies.
- * It is imported by both the client and server without modification.
+ * Primitive types, enumerations, and envelope definitions for the Tic-Tac-Toe
+ * realtime protocol (v1). Framework-agnostic with zero runtime dependencies.
  *
  * @see PROTOCOL.md for the full specification.
  */
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Protocol Constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** The single supported protocol version. All messages carry this value. */
 export const PROTOCOL_VERSION = 1 as const;
@@ -55,10 +47,6 @@ export const EVENT_BUFFER_SIZE = 500 as const;
 /** Maximum allowed length for a player's display name. */
 export const MAX_PLAYER_NAME_LENGTH = 30 as const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Scalar Domain Types
-// ─────────────────────────────────────────────────────────────────────────────
-
 /** Opaque string type aliases – improve readability, prevent accidental swap. */
 export type RoomId   = string & { readonly __brand: 'RoomId' };
 export type GameId   = string & { readonly __brand: 'GameId' };
@@ -77,10 +65,6 @@ export type CommandId    = string & { readonly __brand: 'CommandId' };
 export function brand<T extends string>(value: string): T {
   return value as T;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Board / Game Primitives
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** The two player symbols. */
 export type PlayerSymbol = 'X' | 'O';
@@ -139,10 +123,6 @@ export function getCell(board: BoardSnapshot, row: BoardIndex, col: BoardIndex):
   return board[positionToIndex(row, col)] as CellValue;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Winning Line
-// ─────────────────────────────────────────────────────────────────────────────
-
 export type WinningLineType = 'row' | 'col' | 'diagonal';
 
 /**
@@ -157,10 +137,6 @@ export type WinningLine = {
    */
   readonly positions: readonly [BoardPosition, BoardPosition, BoardPosition];
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Game Status / Result Types
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type GameStatus = 'WAITING' | 'ACTIVE' | 'FINISHED';
 
@@ -185,14 +161,7 @@ export type GameResult = {
   readonly endedAt: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Move Record
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * A single move as stored in the authoritative move history.
- * Immutable once created.
- */
+/** A single move as stored in the authoritative move history. Immutable once created. */
 export type MoveRecord = {
   /** 1-based index of this move within the current game. */
   readonly sequenceInGame: number;
@@ -201,10 +170,6 @@ export type MoveRecord = {
   /** Server timestamp (ms) when the move was applied. */
   readonly appliedAt: number;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Player Info
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** Connection state for a player slot in a room. */
 export type ConnectionState = 'CONNECTED' | 'DISCONNECTED' | 'RECONNECTING';
@@ -219,10 +184,6 @@ export type PlayerInfo = {
   readonly lastSeenAt: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Game Stats
-// ─────────────────────────────────────────────────────────────────────────────
-
 export type GameStats = {
   /** Total number of moves played. */
   readonly moveCount: number;
@@ -231,10 +192,6 @@ export type GameStats = {
   /** Server timestamp (ms) when the first move was made. */
   readonly firstMoveAt: number | null;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Game Summary (for history lists)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** Compact game record for the room history list. */
 export type GameSummary = {
@@ -245,10 +202,6 @@ export type GameSummary = {
   readonly startedAt: number;
   readonly endedAt: number;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Room State Snapshot
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Full room state transmitted to a client on join or reconnect.
@@ -279,13 +232,7 @@ export type RoomStateSnapshot = {
   readonly gameHistory: ReadonlyArray<GameSummary>;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Message Envelopes
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Fields present on every message in both directions.
- */
+/** Fields present on every message in both directions. */
 export type BaseEnvelope = {
   /** Always 1 for this protocol version. */
   readonly protocolVersion: typeof PROTOCOL_VERSION;
@@ -344,20 +291,12 @@ export type GlobalEventEnvelope = BaseEnvelope & {
   readonly correlationId?: CommandId;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Move Rejection Reason
-// ─────────────────────────────────────────────────────────────────────────────
-
 export type MoveRejectionReason =
   | 'NOT_YOUR_TURN'
   | 'CELL_OCCUPIED'
   | 'OUT_OF_BOUNDS'
   | 'GAME_NOT_ACTIVE'
   | 'GAME_ID_MISMATCH';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Rematch State
-// ─────────────────────────────────────────────────────────────────────────────
 
 export type RematchState = {
   readonly requestedBy: PlayerSymbol;

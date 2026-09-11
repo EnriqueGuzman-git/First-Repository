@@ -1,26 +1,39 @@
-/**
- * @file roomsRouter.ts
- * @description Express router for non-realtime HTTP endpoints.
- *
- * POST /api/rooms          — Create a new room, return the roomId.
- * GET  /api/rooms/:id      — Get current room state snapshot.
- * GET  /api/rooms/:id/history — Get completed game history for a room.
- * GET  /health             — Health check.
- * GET  /metrics            — Observability snapshot.
- */
+/** Express routers for the non-realtime HTTP surface: rooms API plus health/metrics. */
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { ServerContext } from '../app/commandHandler.js';
 import { roomStatus, playerCount } from '../app/roomStore.js';
 import { logger } from '../utils/logger.js';
+import { isRoomId } from '../../shared/protocol/guards.js';
+import type { RoomId } from '../../shared/protocol/types.js';
+import { createFixedWindowLimiter } from './rateLimiter.js';
+
+/** Coarse abuse protection for the unauthenticated room-creation endpoint. */
+const ROOM_CREATE_WINDOW_MS = 60_000;
+const ROOM_CREATE_MAX_PER_WINDOW = 20;
+
+/** Extract a best-effort client identifier for rate-limit keying. */
+function clientKey(req: Request): string {
+  return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+}
 
 export function createRoomsRouter(ctx: ServerContext): Router {
   const router = Router();
 
-  // ── POST /api/rooms ───────────────────────────────────────────────────────
+  const createLimiter = createFixedWindowLimiter({
+    windowMs: ROOM_CREATE_WINDOW_MS,
+    max: ROOM_CREATE_MAX_PER_WINDOW,
+  });
 
-  router.post('/rooms', (_req: Request, res: Response) => {
+  router.post('/rooms', (req: Request, res: Response) => {
+    const { allowed, retryAfterMs } = createLimiter.check(clientKey(req));
+    if (!allowed) {
+      res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+      res.status(429).json({ error: 'RATE_LIMITED', retryAfterMs });
+      return;
+    }
+
     const room = ctx.rooms.createRoom();
 
     logger.info('Room created via HTTP', { roomId: room.roomId });
@@ -32,10 +45,14 @@ export function createRoomsRouter(ctx: ServerContext): Router {
     });
   });
 
-  // ── GET /api/rooms/:id ────────────────────────────────────────────────────
-
   router.get('/rooms/:id', (req: Request, res: Response) => {
-    const room = ctx.rooms.getRoom(req.params['id'] as import('../../shared/protocol/types.js').RoomId);
+    const id = req.params['id'] ?? '';
+    if (!isRoomId(id)) {
+      res.status(400).json({ error: 'INVALID_ROOM_ID' });
+      return;
+    }
+
+    const room = ctx.rooms.getRoom(id as RoomId);
     if (!room) {
       res.status(404).json({ error: 'ROOM_NOT_FOUND' });
       return;
@@ -58,10 +75,14 @@ export function createRoomsRouter(ctx: ServerContext): Router {
     });
   });
 
-  // ── GET /api/rooms/:id/history ────────────────────────────────────────────
-
   router.get('/rooms/:id/history', (req: Request, res: Response) => {
-    const room = ctx.rooms.getRoom(req.params['id'] as import('../../shared/protocol/types.js').RoomId);
+    const id = req.params['id'] ?? '';
+    if (!isRoomId(id)) {
+      res.status(400).json({ error: 'INVALID_ROOM_ID' });
+      return;
+    }
+
+    const room = ctx.rooms.getRoom(id as RoomId);
     if (!room) {
       res.status(404).json({ error: 'ROOM_NOT_FOUND' });
       return;
@@ -73,10 +94,6 @@ export function createRoomsRouter(ctx: ServerContext): Router {
 
   return router;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Health + Metrics (attached to the app, not /api prefix)
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function createSystemRouter(
   ctx: ServerContext,

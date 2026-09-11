@@ -1,13 +1,7 @@
 /**
- * @file logger.ts
- * @description Structured JSON logger.
- *
- * Writes JSON lines to stdout (info/debug) and stderr (warn/error).
- * In test environments (NODE_ENV=test) all output is suppressed unless
- * LOG_LEVEL=debug is explicitly set, keeping test output clean.
- *
- * Each log line is a single JSON object:
- *   { level, service, timestamp, traceId?, msg, ...fields }
+ * Structured JSON logger: one object per line to stdout (info/debug) or stderr
+ * (warn/error). Under NODE_ENV=test all output is suppressed unless LOG_LEVEL is
+ * set, keeping test output clean.
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -48,13 +42,3 @@ export const logger = {
   warn:  (msg: string, fields?: Record<string, unknown>) => write('warn',  msg, fields),
   error: (msg: string, fields?: Record<string, unknown>) => write('error', msg, fields),
 };
-
-/** Attach a traceId to every call in a request scope. */
-export function withTrace(traceId: string): typeof logger {
-  return {
-    debug: (msg, f) => logger.debug(msg, { traceId, ...f }),
-    info:  (msg, f) => logger.info(msg,  { traceId, ...f }),
-    warn:  (msg, f) => logger.warn(msg,  { traceId, ...f }),
-    error: (msg, f) => logger.error(msg, { traceId, ...f }),
-  };
-}

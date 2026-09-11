@@ -1,18 +1,7 @@
 /**
- * @file commands.ts
- * @description All client→server command types for the Tic-Tac-Toe realtime
- * protocol (version 1).
- *
- * Design rules enforced here:
- *  - Every command extends CommandEnvelope (carries commandId + sessionToken).
- *  - commandId is the idempotency key — stable across retries.
- *  - messageId (from BaseEnvelope) changes on every transmission attempt.
- *  - No runtime logic lives here: this file is pure type declarations.
- *  - AnyCommand is the exhaustive discriminated union used at the server
- *    message-router entry point.
+ * Client→server command types for the Tic-Tac-Toe realtime protocol (v1).
  *
  * @see PROTOCOL.md §11 for lifecycle documentation of each command.
- * @see types.ts for shared primitives and envelope definitions.
  */
 
 import type {
@@ -22,12 +11,7 @@ import type {
   SessionToken,
 } from './types.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Command Type Literal Constants
-// Defined as a const object so they can be used as values in guards.ts
-// without duplicating the string literals.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Const object so the literals can be reused as values in guards.ts.
 export const CommandType = {
   AUTH:             'AUTH',
   JOIN_ROOM:        'JOIN_ROOM',
@@ -44,12 +28,8 @@ export const CommandType = {
 
 export type CommandTypeLiteral = typeof CommandType[keyof typeof CommandType];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.2  AUTH
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Sent immediately after WebSocket open — must be the first message.
+ * §11.2 AUTH. Sent immediately after WebSocket open — must be the first message.
  *
  * Idempotency: A duplicate commandId returns the same AUTH_ACK with the
  * same sessionToken and playerId. No new session is minted.
@@ -72,12 +52,8 @@ export type AuthCommand = CommandEnvelope & {
   readonly clientVersion: string;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.3  JOIN_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Join an existing room by its 8-character code.
+ * §11.3 JOIN_ROOM. Join an existing room by its 8-character code.
  *
  * Preconditions (validated server-side):
  *  - Player is authenticated.
@@ -99,12 +75,8 @@ export type JoinRoomCommand = CommandEnvelope & {
   readonly playerName: string | null;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.4  LEAVE_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Voluntarily leave a room.
+ * §11.4 LEAVE_ROOM. Voluntarily leave a room.
  *
  * If a game is ACTIVE when this command is received, the game is immediately
  * ended with outcome FORFEIT before the player is removed.
@@ -122,12 +94,8 @@ export type LeaveRoomCommand = CommandEnvelope & {
   readonly reason: 'VOLUNTARY' | 'CLOSING_TAB';
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.5  PLAYER_READY
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Signal that the player's UI is fully loaded and ready to start.
+ * §11.5 PLAYER_READY. Signal that the player's UI is fully loaded and ready to start.
  *
  * Both players must send PLAYER_READY before the server emits GAME_STARTED.
  * This prevents the game starting before either player can see the board.
@@ -145,12 +113,8 @@ export type PlayerReadyCommand = CommandEnvelope & {
   readonly roomId: RoomId;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.7  MAKE_MOVE
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Submit a move to the server.
+ * §11.7 MAKE_MOVE. Submit a move to the server.
  *
  * The server is the sole authority on move validity. The client may optimistically
  * render the move but MUST roll back if it receives MOVE_REJECTED.
@@ -186,12 +150,8 @@ export type MakeMoveCommand = CommandEnvelope & {
   };
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.12  REMATCH COMMANDS
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Propose a rematch after the current game ends.
+ * §11.12 REQUEST_REMATCH. Propose a rematch after the current game ends.
  *
  * Preconditions:
  *  - Player is in the room.
@@ -245,12 +205,8 @@ export type DeclineRematchCommand = CommandEnvelope & {
   readonly gameId: GameId;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.13  PING
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Application-level heartbeat. Sent by the client every CLIENT_PING_INTERVAL_MS
+ * §11.13 PING. Application-level heartbeat. Sent by the client every CLIENT_PING_INTERVAL_MS
  * (25 seconds). Distinct from the WebSocket protocol-level ping frame.
  *
  * NOT idempotent by design — every PING produces a fresh PONG.
@@ -265,12 +221,8 @@ export type PingCommand = CommandEnvelope & {
   readonly clientTime: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.14  RECONNECT
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Resume an interrupted session after AUTH, instead of using JOIN_ROOM.
+ * §11.14 RECONNECT. Resume an interrupted session after AUTH, instead of using JOIN_ROOM.
  *
  * Should be sent when AUTH_ACK.existingRoom is non-null, indicating the
  * player's previous session is still open on the server.
@@ -299,12 +251,8 @@ export type ReconnectCommand = CommandEnvelope & {
   readonly lastReceivedSeq: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 11.15  SYNC_REQUEST
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Request a replay of events that the client detected it missed.
+ * §11.15 SYNC_REQUEST. Request a replay of events that the client detected it missed.
  *
  * Triggered when the client receives an event with:
  *   event.sessionSeq > (lastReceivedSeq + 1)
@@ -325,21 +273,9 @@ export type SyncRequestCommand = CommandEnvelope & {
   readonly fromSeq: number;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Exhaustive Union
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Discriminated union of every possible client→server command.
- *
- * Used at the server's WebSocket message handler as the target type for
- * the parsed JSON payload. The `type` field drives the switch/discriminant.
- *
- * Adding a new command requires:
- *  1. Defining the command type above.
- *  2. Adding it to this union.
- *  3. Adding a corresponding case in the server's message router.
- *  4. Adding a type guard in guards.ts.
+ * Discriminated union of every possible client→server command; the `type` field
+ * is the discriminant at the server's message router.
  */
 export type AnyCommand =
   | AuthCommand

@@ -1,37 +1,10 @@
 /**
- * @file index.ts
- * @description Barrel export for the shared Tic-Tac-Toe realtime protocol package.
+ * Barrel export for the shared Tic-Tac-Toe realtime protocol package.
  *
- * Import everything from this single entry point:
- *
- *   // Server
- *   import type { AnyCommand, MakeMoveCommand } from '@ttt/shared/protocol';
- *   import { CommandType, parseCommand, isAnyCommand } from '@ttt/shared/protocol';
- *
- *   // Client
- *   import type { AnyEvent, GameStartedEvent } from '@ttt/shared/protocol';
- *   import { EventType, parseEvent, isGameStartedEvent } from '@ttt/shared/protocol';
- *
- * Package alias is configured in each workspace's tsconfig.json paths:
- *   "@ttt/shared/protocol" → "src/shared/protocol/index.ts"
- *
- * The protocol package has NO runtime dependencies beyond what is declared
- * here. It imports no framework code, no HTTP libraries, no database drivers.
- * It is independently importable in:
- *  - The Node.js server process
- *  - The Vite/React client bundle
- *  - Vitest unit tests for the game engine
- *  - Any future CLI tooling or admin scripts
- *
- * Versioning note:
- *   Any breaking change to this file's public surface is a protocol version
- *   bump. Additive changes (new optional fields, new event types) are
- *   backward-compatible per the rules in PROTOCOL.md §5.
+ * Versioning note: any breaking change to this file's public surface is a protocol
+ * version bump; additive changes (new optional fields, new event types) are
+ * backward-compatible per the rules in PROTOCOL.md §5.
  */
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export from types.ts — primitives, envelopes, domain types
-// ─────────────────────────────────────────────────────────────────────────────
 
 export {
   // Protocol constants
@@ -101,10 +74,6 @@ export type {
   RematchState,
 } from './types.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export from commands.ts — client→server
-// ─────────────────────────────────────────────────────────────────────────────
-
 export { CommandType } from './commands.js';
 
 export type {
@@ -127,10 +96,6 @@ export type {
   AnyCommand,
   CommandByType,
 } from './commands.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export from events.ts — server→client
-// ─────────────────────────────────────────────────────────────────────────────
 
 export { EventType } from './events.js';
 
@@ -185,10 +150,6 @@ export type {
   RoomHistoryResponse,
 } from './events.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export from errors.ts — error codes, ERROR event, metadata
-// ─────────────────────────────────────────────────────────────────────────────
-
 export {
   // Runtime metadata lookup table
   ERROR_META,
@@ -214,10 +175,6 @@ export type {
   // Event type
   ErrorEvent,
 } from './errors.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-export from guards.ts — runtime type guards and parse helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 export {
   // Domain primitive guards
@@ -280,10 +237,6 @@ export {
   // Error code guard
   isErrorCode,
 } from './guards.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience re-export: full wire message type
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * AnyWireMessage is the complete union of every message that can appear on

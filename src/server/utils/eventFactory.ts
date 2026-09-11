@@ -1,17 +1,6 @@
 /**
- * @file eventFactory.ts
- * @description Pure functions that build wire-protocol event objects.
- *
- * Every function here is a plain data constructor — no I/O, no side effects.
- * The session layer calls these to translate engine events and room state
- * into the exact shapes the protocol specification requires.
- *
- * Layer contract:
- *  - Input:  engine events / room records / domain primitives
- *  - Output: fully-typed wire protocol event objects ready to serialise
- *
- * The sessionSeq counter is OWNED by GameSession; it is passed in as a
- * parameter so this file has no mutable state.
+ * Pure data constructors for wire-protocol event objects (no I/O, no side effects).
+ * sessionSeq is owned by GameSession and passed in, so this file holds no mutable state.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -40,10 +29,6 @@ import type { AnyRoomEvent } from '../../shared/protocol/events.js';
 import type { ErrorEvent } from '../../shared/protocol/errors.js';
 import type { ErrorCode } from '../../shared/protocol/errors.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Envelope helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 function globalBase<T extends string>(type: T, correlationId?: CommandId) {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -70,10 +55,6 @@ function roomBase<T extends string>(
     ...(correlationId !== undefined ? { correlationId } : {}),
   } as const;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Global events (no sessionSeq / roomId)
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function makeAuthAck(
   sessionToken: SessionToken,
@@ -117,10 +98,6 @@ export function makeErrorEvent(
     ...(data !== undefined ? { data } : {}),
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Room lifecycle events
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function makeRoomJoined(
   roomId: RoomId,
@@ -178,10 +155,6 @@ export function makePlayerLeft(
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Ready / game start events
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function makePlayerReadyAck(
   roomId: RoomId,
   readyPlayers: ReadonlyArray<PlayerSymbol>,
@@ -225,10 +198,6 @@ export function makeGameStarted(
     startedAt,
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Move events
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function makeMoveAck(
   roomId: RoomId,
@@ -295,10 +264,6 @@ export function makeMoveRejected(
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Game finished
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function makeGameFinished(
   roomId: RoomId,
   gameId: GameId,
@@ -317,10 +282,6 @@ export function makeGameFinished(
     stats,
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Rematch events
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function makeRematchRequested(
   roomId: RoomId,
@@ -361,10 +322,6 @@ export function makeRematchExpired(
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Presence events
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function makeOpponentDisconnected(
   roomId: RoomId,
   symbol: PlayerSymbol,
@@ -388,10 +345,6 @@ export function makeOpponentReconnected(
     symbol,
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Reconnect / sync
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function makeReconnectAck(
   roomId: RoomId,

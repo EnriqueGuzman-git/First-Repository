@@ -7,28 +7,30 @@ dist/
 # Local durable history
 data/
 
-# ENvironment variables
+# Environment variables
 .env
 .env.*
 !.env.example
 
 # Logs
 *.log
+npm-debug.log*
 
-#OS files
+# OS files
 .DS_Store
 Thumbs.db
 
-#IDE / editor
+# Editor / IDE
 .vscode/
 .idea/
 
-#Test / coverage output
+# Test / coverage output
 coverage/
+test-results/
+playwright-report/
 
-#Temporary files
-*.tmp
+# TypeScript incremental build info
 *.tsbuildinfo
 
-# Playwright test artifacts
-test-results/
+# Temporary files
+*.tmp

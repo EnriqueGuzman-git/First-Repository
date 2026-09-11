@@ -1,16 +1,6 @@
 /**
- * @file index.ts
- * @description Server entry point.
- *
- * Creates all layers in dependency order, wires them together, and starts
- * listening. Handles graceful shutdown on SIGTERM/SIGINT.
- *
- * Startup order:
- *  1. Build ServerContext (stores + game session map)
- *  2. Create Express HTTP server
- *  3. Attach WebSocket server
- *  4. Start listening
- *  5. Register shutdown handler
+ * Server entry point. Creates all layers in dependency order, wires them
+ * together, starts listening, and handles graceful shutdown on SIGTERM/SIGINT.
  */
 
 import { createServer } from 'node:http';
@@ -27,25 +17,18 @@ import { logger } from './utils/logger.js';
 import { JsonHistoryRepository } from './app/historyRepository.js';
 import { Metrics } from './utils/metrics.js';
 import { parseAllowedOrigins, isOriginAllowed } from './security/originPolicy.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Configuration
-// ─────────────────────────────────────────────────────────────────────────────
+import { makeErrorEvent } from './utils/eventFactory.js';
+import { ERROR_META } from '../shared/protocol/errors.js';
 
 const PORT           = parseInt(process.env['PORT'] ?? '8080', 10);
 const SERVER_VERSION = process.env['SERVER_VERSION'] ?? '0.1.0';
 const CORS_ORIGIN    = process.env['CORS_ORIGIN'] ?? 'http://localhost:3000';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Build server
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function buildServer(options: { historyFilePath?: string } = {}): {
   httpServer: ReturnType<typeof createServer>;
   ctx: ServerContext;
   close: () => Promise<void>;
 } {
-  // ── 1. Stores ─────────────────────────────────────────────────────────────
   const sessions:     SessionStore                = new SessionStore();
   const rooms:        RoomStore                   = new RoomStore();
   const gameSessions: Map<RoomId, GameSession>    = new Map();
@@ -64,7 +47,6 @@ export function buildServer(options: { historyFilePath?: string } = {}): {
     serverVersion: SERVER_VERSION,
   };
 
-  // ── 2. Express ────────────────────────────────────────────────────────────
   const app = express();
 
   app.use(express.json({ limit: '64kb' }));
@@ -88,27 +70,35 @@ export function buildServer(options: { historyFilePath?: string } = {}): {
     next();
   });
 
-  // ── 3. HTTP routes ────────────────────────────────────────────────────────
   app.use('/api', createRoomsRouter(ctx));
   app.use('/',    createSystemRouter(ctx, () => wsServer.connectionManager.connectionCount));
 
-  // ── 4. HTTP server ────────────────────────────────────────────────────────
   const httpServer = createServer(app);
 
-  // ── 5. WebSocket server ───────────────────────────────────────────────────
   const wsServer = createWsServer(httpServer, ctx, { allowedOrigins });
 
-  // ── 6. Maintenance timers ─────────────────────────────────────────────────
   const maintenanceInterval = setInterval(() => {
     sessions.purgeExpired();
     rooms.purgeExpired();
   }, 10 * 60 * 1_000); // every 10 minutes
 
-  // ── 7. Graceful shutdown ──────────────────────────────────────────────────
   const close = async (): Promise<void> => {
     logger.info('Server shutting down…');
 
     clearInterval(maintenanceInterval);
+
+    // Notify connected clients before tearing down sockets so they can show a
+    // "server restarting" state and back off, rather than seeing an opaque
+    // socket close. SERVER_SHUTTING_DOWN is recoverable-by-reconnect.
+    const shutdownMeta = ERROR_META['SERVER_SHUTTING_DOWN'];
+    const shutdownEvent = makeErrorEvent(
+      'SERVER_SHUTTING_DOWN',
+      shutdownMeta.summary,
+      shutdownMeta.recoverable,
+    );
+    wsServer.connectionManager.broadcastAll(
+      shutdownEvent as unknown as Record<string, unknown>,
+    );
 
     // Destroy all active game sessions (clears timers)
     for (const gs of gameSessions.values()) gs.destroy();
@@ -125,10 +115,6 @@ export function buildServer(options: { historyFilePath?: string } = {}): {
 
   return { httpServer, ctx, close };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main — only runs when this file is executed directly
-// ─────────────────────────────────────────────────────────────────────────────
 
 // Guard: do not start listening when imported by tests
 if (process.argv[1] && process.argv[1].endsWith('index.js')) {

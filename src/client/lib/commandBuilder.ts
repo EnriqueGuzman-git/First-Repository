@@ -1,28 +1,17 @@
 /**
- * @file commandBuilder.ts
- * @description Pure functions that construct typed, envelope-wrapped wire
- * commands ready to JSON.stringify and send.
+ * Pure builders for typed, envelope-wrapped wire commands.
  *
- * Rules:
- *  - Every function is pure. No I/O, no side-effects.
- *  - commandId is the IDEMPOTENCY KEY — callers supply it.
- *    For new commands, generate with crypto.randomUUID().
- *    For retries, reuse the same commandId.
- *  - messageId is always fresh (new UUID per call).
- *  - Returns plain objects that are assignable to the matching command type.
+ * commandId is the idempotency key and is caller-supplied: fresh per new
+ * command, reused across retries. messageId is always a fresh UUID per call.
  */
 
 import { PROTOCOL_VERSION, brand } from '@ttt/shared/protocol';
 import type {
   SessionToken, RoomId, GameId, CommandId, MessageId,
-  AuthCommand, JoinRoomCommand, LeaveRoomCommand, PlayerReadyCommand,
+  JoinRoomCommand, LeaveRoomCommand, PlayerReadyCommand,
   MakeMoveCommand, RequestRematchCommand, AcceptRematchCommand,
-  DeclineRematchCommand, PingCommand, ReconnectCommand, SyncRequestCommand,
+  DeclineRematchCommand, ReconnectCommand, SyncRequestCommand,
 } from '@ttt/shared/protocol';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Envelope factory
-// ─────────────────────────────────────────────────────────────────────────────
 
 function envelope(
   type:         string,
@@ -39,27 +28,6 @@ function envelope(
   } as const;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTH
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function buildAuth(
-  commandId:     CommandId,
-  guestToken:    SessionToken | null,
-  clientVersion: string,
-): AuthCommand {
-  return {
-    ...envelope('AUTH', commandId, null),
-    sessionToken:  null,
-    guestToken,
-    clientVersion,
-  } as AuthCommand;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// JOIN_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function buildJoinRoom(
   commandId:    CommandId,
   sessionToken: SessionToken,
@@ -72,10 +40,6 @@ export function buildJoinRoom(
     playerName,
   } as JoinRoomCommand;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LEAVE_ROOM
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function buildLeaveRoom(
   commandId:    CommandId,
@@ -90,10 +54,6 @@ export function buildLeaveRoom(
   } as LeaveRoomCommand;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PLAYER_READY
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function buildPlayerReady(
   commandId:    CommandId,
   sessionToken: SessionToken,
@@ -104,10 +64,6 @@ export function buildPlayerReady(
     roomId,
   } as PlayerReadyCommand;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MAKE_MOVE
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function buildMakeMove(
   commandId:    CommandId,
@@ -124,10 +80,6 @@ export function buildMakeMove(
     position: { row, col },
   } as MakeMoveCommand;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REMATCH
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function buildRequestRematch(
   commandId:    CommandId,
@@ -168,25 +120,6 @@ export function buildDeclineRematch(
   } as DeclineRematchCommand;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PING
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function buildPing(
-  commandId:    CommandId,
-  sessionToken: SessionToken,
-): PingCommand {
-  const clientTime = Date.now();
-  return {
-    ...envelope('PING', commandId, sessionToken),
-    clientTime,
-  } as PingCommand;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RECONNECT
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function buildReconnect(
   commandId:        CommandId,
   sessionToken:     SessionToken,
@@ -200,10 +133,6 @@ export function buildReconnect(
   } as ReconnectCommand;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SYNC_REQUEST
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function buildSyncRequest(
   commandId:    CommandId,
   sessionToken: SessionToken,
@@ -216,10 +145,6 @@ export function buildSyncRequest(
     fromSeq,
   } as SyncRequestCommand;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Utility: generate a fresh commandId
-// ─────────────────────────────────────────────────────────────────────────────
 
 export function newCommandId(): CommandId {
   return brand<CommandId>(crypto.randomUUID());

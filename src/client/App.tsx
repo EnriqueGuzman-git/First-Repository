@@ -1,11 +1,6 @@
 /**
- * @file App.tsx
- * @description Root component. Owns the useGame hook and routes between
- * the lobby and the active game view based on GamePhase.
- *
- * URL scheme:
- *   /            — Lobby (create or enter room code)
- *   /?room=XXXX  — Auto-join room XXXX on mount
+ * Root component. Owns the useGame hook and routes between the lobby and the
+ * active game view based on GamePhase. `/?room=XXXX` auto-joins room XXXX.
  */
 
 import React, { useEffect, useRef } from 'react';
@@ -36,7 +31,6 @@ export default function App() {
   const { phase, wsState, latency } = state;
   const autoJoinedRoomRef = useRef<string | null>(null);
 
-  // ── Auto-join from URL param ───────────────────────────────────────────────
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -52,24 +46,20 @@ export default function App() {
     }
   }, [joinRoom, phase, wsState]);
 
-  // ── Derived display data ──────────────────────────────────────────────────
   const pendingIdx = pendingCellIndices(state.confirmedBoard, state.optimisticBoard);
   const winIdx     = winningIndices(state.winningLine);
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app">
-      {/* Always-visible connection indicator */}
       <header className="app__header">
         <span className="app__logo">TTT</span>
         <ConnectionPill wsState={wsState} latency={latency} />
       </header>
 
-      {/* Reconnecting overlay — blocks interaction while socket recovers */}
+      {/* Blocks interaction while the socket recovers. */}
       <ReconnectingOverlay visible={wsState === 'RECONNECTING'} />
 
       <main className="app__main">
-        {/* ── Lobby phases ── */}
         {(phase === 'LOBBY' || phase === 'WAITING_FOR_PLAYER' || phase === 'READY_CHECK') && (
           <Lobby
             state={state}
@@ -79,7 +69,6 @@ export default function App() {
           />
         )}
 
-        {/* ── Active game ── */}
         {(phase === 'ACTIVE' || phase === 'RECONNECTING' || phase === 'FINISHED') && (
           <div className="game">
             <GameStatus
@@ -114,7 +103,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Move latency micro-metric (dev-visible) */}
+            {/* Move latency micro-metric (dev-visible). */}
             {latency.lastMoveAckMs !== null && (
               <div className="game__ack-latency" aria-label="Last move confirmation time">
                 ✓ {latency.lastMoveAckMs}ms

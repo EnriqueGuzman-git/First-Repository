@@ -1,10 +1,4 @@
-/**
- * @file main.tsx
- * @description React application entry point.
- *
- * Mounts the root App component into the DOM.
- * StrictMode is enabled in development to surface potential issues early.
- */
+/** React application entry point. Mounts the root App into the DOM. */
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
