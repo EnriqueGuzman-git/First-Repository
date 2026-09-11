@@ -20,6 +20,7 @@ import {
   handleMakeMove, handleRequestRematch, handleAcceptRematch, handleDeclineRematch,
   handlePing, handleReconnect, handleSyncRequest, handleDisconnect,
   registerPlayerConnection, unregisterPlayerConnection, getPlayerConnectionIds,
+  playerConnectionRegistry,
 } from '../app/commandHandler.js';
 import type { Delivery } from '../app/commandHandler.js';
 
@@ -225,8 +226,18 @@ export class MessageRouter {
           this.cm.send(connId, d.event);
         }
       } else if (d.target === 'others') {
-        for (const connId of getPlayerConnectionIds(brand<PlayerId>(d.id))) {
-          this.cm.send(connId, d.event);
+        // 'others' means: send to all players EXCEPT the anchor (d.id).
+        // The anchor is the player who triggered the event (e.g. the mover);
+        // everyone else in the room should receive it.
+        // Note: in practice, room-level 'others' delivery is handled by
+        // GameSession.sendFn which has direct room access. This branch covers
+        // any future handler-level 'others' deliveries.
+        const excludedPlayerId = brand<PlayerId>(d.id);
+        for (const [pid, connIds] of playerConnectionRegistry) {
+          if (pid === excludedPlayerId) continue;
+          for (const connId of connIds) {
+            this.cm.send(connId, d.event);
+          }
         }
       }
     }

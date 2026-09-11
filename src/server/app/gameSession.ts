@@ -343,7 +343,6 @@ export class GameSession {
     room: RoomRecord,
     playerId: PlayerId,
     gameId: GameId,
-    firstTurnOverride?: PlayerSymbol,
   ): boolean {
     const state = this.gameState;
     if (!state || state.status !== 'FINISHED' || state.gameId !== gameId) return false;
@@ -360,9 +359,8 @@ export class GameSession {
 
       // createRematch swaps the first turn relative to the finished game.
       const rematchResult = createRematch(state, generateGameId(), Date.now());
-      const newFirstTurn  = firstTurnOverride ?? rematchResult.newState.firstTurn;
       room.readySymbols   = new Set();
-      this.startGame(room, newFirstTurn);
+      this.startGame(room, rematchResult.newState.firstTurn);
     }
     return true;
   }
@@ -486,12 +484,20 @@ export class GameSession {
     });
 
     // Verify the buffer still fully covers the requested range for this player.
-    // We do this by checking that the oldest relevant event's seq equals fromSeq
-    // (no gap at the start). If the buffer was trimmed and some events are gone,
-    // relevant[0].sessionSeq would be > fromSeq, meaning we can't give a
-    // complete replay — return null to signal fallback to SNAPSHOT.
-    const oldestInBuffer = this.replayBuffer[0];
-    if (oldestInBuffer && oldestInBuffer.event.sessionSeq > fromSeq) {
+    // We must check the oldest entry *scoped to this player* — not the global
+    // oldest entry — because the buffer may contain events for the other player
+    // with lower seq numbers that this player never received.
+    // If the oldest scoped entry has a seq > fromSeq, the buffer has been
+    // trimmed past the start of the requested range; signal SNAPSHOT fallback.
+    const oldestScoped = relevant[0];
+    if (!oldestScoped && fromSeq <= this.currentSeq) {
+      // The player has no events in range (e.g. they received only MOVE_BROADCAST
+      // but we're replaying from before any broadcast). Not a gap — just nothing
+      // to replay for this player in this range.
+      return [];
+    }
+    if (oldestScoped && oldestScoped.event.sessionSeq > fromSeq) {
+      // Gap at the start of this player's scoped stream — buffer is exhausted.
       return null;
     }
 

@@ -127,7 +127,7 @@ function resultHeadline(result: GameResult, mySymbol: PlayerSymbol | null): stri
       return '🚪 You forfeited';
     case 'ABANDONED':
       if (result.winner === mySymbol) return '🏆 Opponent abandoned — you win!';
-      return '💨 Opponent abandoned the game';
+      return '💨 You abandoned the game';
   }
 }
 

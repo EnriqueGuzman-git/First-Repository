@@ -9,7 +9,7 @@ import type {
   AnyEvent, ErrorEvent,
   WinningLine, PlayerInfo,
 } from '@ttt/shared/protocol';
-import { EventType } from '@ttt/shared/protocol';
+import { EventType, EMPTY_BOARD } from '@ttt/shared/protocol';
 
 import { WsClient } from '../lib/wsClient';
 import type { WsClientConfig, WsState } from '../lib/wsClient';
@@ -129,7 +129,7 @@ function dispatchEvent(
         symbol:         event.symbol,
         players:        rs.players,
         readyPlayers:   rs.readyPlayers,
-        confirmedBoard: cg?.board ?? (Array(9).fill('') as unknown as import('@ttt/shared/protocol').BoardSnapshot),
+        confirmedBoard: cg?.board ?? EMPTY_BOARD,
         confirmedTurn:  cg?.currentTurn ?? 'X',
         gameStatus:     cg?.status ?? 'WAITING',
         gameId:         cg?.gameId ?? null,
@@ -262,7 +262,7 @@ function dispatchEvent(
         symbol:         event.symbol,
         players:        rs.players,
         readyPlayers:   rs.readyPlayers,
-        confirmedBoard: cg?.board ?? (Array(9).fill('') as unknown as import('@ttt/shared/protocol').BoardSnapshot),
+        confirmedBoard: cg?.board ?? EMPTY_BOARD,
         confirmedTurn:  cg?.currentTurn ?? 'X',
         gameStatus:     cg?.status ?? 'WAITING',
         gameId:         cg?.gameId ?? null,
@@ -285,7 +285,7 @@ function dispatchEvent(
           symbol:         state.mySymbol ?? 'X',
           players:        rs.players,
           readyPlayers:   rs.readyPlayers,
-          confirmedBoard: cg?.board ?? (Array(9).fill('') as unknown as import('@ttt/shared/protocol').BoardSnapshot),
+          confirmedBoard: cg?.board ?? EMPTY_BOARD,
           confirmedTurn:  cg?.currentTurn ?? 'X',
           gameStatus:     cg?.status ?? 'WAITING',
           gameId:         cg?.gameId ?? null,
@@ -293,8 +293,8 @@ function dispatchEvent(
           sessionSeq:     event.sessionSeq,
         });
       }
-      // REPLAY mode: individual events are dispatched by the server in order —
-      // they arrive as individual events and are handled above.
+      // In REPLAY mode the events are bundled inside event.events and
+      // dispatched individually by the loop above — not received separately.
       break;
     }
 

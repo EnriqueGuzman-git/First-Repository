@@ -149,9 +149,9 @@ export class WsClient {
         this.stopHeartbeat();
         if (this.destroyed) return;
         const terminal =
-          ev.code === 4001 || // unsupported version
-          ev.code === 4003 || // origin denied
-          ev.code === 1008;   // policy violation
+          ev.code === 4001 || // unsupported protocol version — server closes with this code
+          ev.code === 4006 || // ping timeout — server closes idle connections
+          ev.code === 1008;   // policy violation (generic)
         if (terminal) {
           this.setState('CLOSED');
         } else {

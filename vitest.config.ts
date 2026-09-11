@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -19,6 +20,7 @@ export default defineConfig({
         'src/server/ws/**',
         'src/server/http/**',
         'src/server/utils/**',
+        'src/server/security/**',
         'src/shared/**',
       ],
       exclude: ['**/*.test.ts', '**/index.ts'],
@@ -31,10 +33,11 @@ export default defineConfig({
     },
 
     alias: {
-      '@ttt/shared/protocol': new URL(
-        './src/shared/protocol/index.ts',
-        import.meta.url,
-      ).pathname,
+      // fileURLToPath is required here: on Windows, URL.pathname produces
+      // a leading-slash path (/C:/...) that Node cannot resolve as a file.
+      '@ttt/shared/protocol': fileURLToPath(
+        new URL('./src/shared/protocol/index.ts', import.meta.url),
+      ),
     },
   },
 });
