@@ -774,9 +774,51 @@ describe('Integration: WebSocket protocol', () => {
       reconnectClient.close();
       p2.close();
     });
-  });
 
-  describe('State synchronization', () => {
+    it('reconnect sends STATE_SYNC REPLAY when buffer covers the gap', async () => {
+      const { p1, p1Token, p2, p2Token, roomId } =
+        await setupRoom(server.url, server.apiUrl);
+      const { gameId } = await startGame(p1, p1Token, p2, p2Token, roomId);
+
+      // X makes one move (produces GAME_STARTED seq=1, MOVE_ACK seq=2, MOVE_BROADCAST seq=3)
+      p1.send(makeMoveCmd(p1Token, roomId, gameId, 0, 0));
+      await p1.nextOfType(EventType.MOVE_ACK);
+      await p2.nextOfType(EventType.MOVE_BROADCAST);
+
+      // p1 disconnects
+      p1.close();
+      await p2.nextOfType(EventType.OPPONENT_DISCONNECTED, 5000);
+
+      // p1 reconnects declaring lastReceivedSeq=0 (missed everything)
+      const reconnectClient = new TestClient(server.url);
+      await reconnectClient.waitOpen();
+      reconnectClient.send(authCmd(p1Token));
+      await reconnectClient.nextOfType(EventType.AUTH_ACK);
+
+      reconnectClient.send({
+        ...makeEnvelope(CommandType.RECONNECT, {
+          sessionToken:    p1Token,
+          roomId,
+          lastReceivedSeq: 0,
+        }),
+      });
+
+      await reconnectClient.nextOfType(EventType.RECONNECT_ACK);
+
+      // Server should send a STATE_SYNC in REPLAY mode (buffer covers from seq 1)
+      const sync = await reconnectClient.nextOfType(EventType.STATE_SYNC, 3000);
+      expect(sync['mode']).toBe('REPLAY');
+
+      // P1's scoped replay: GAME_STARTED (broadcast) + MOVE_ACK (player-P1)
+      // MOVE_BROADCAST (others-P1) is excluded — it was addressed to P2 only.
+      const replayEvents = sync['events'] as Array<{ type: string }>;
+      expect(replayEvents.map((e) => e.type)).toContain(EventType.GAME_STARTED);
+      expect(replayEvents.map((e) => e.type)).toContain(EventType.MOVE_ACK);
+      expect(replayEvents.map((e) => e.type)).not.toContain(EventType.MOVE_BROADCAST);
+
+      reconnectClient.close();
+      p2.close();
+    });
     it('SYNC_REQUEST replays buffered room events when the range is available', async () => {
       const { p1, p1Token, p2, p2Token, roomId } =
         await setupRoom(server.url, server.apiUrl);

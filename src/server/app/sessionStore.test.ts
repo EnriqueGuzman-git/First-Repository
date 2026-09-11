@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { PlayerId } from '../../shared/protocol/types.js';
+import { brand } from '../../shared/protocol/types.js';
 import { SessionStore } from './sessionStore.js';
 
 afterEach(() => {
@@ -28,5 +30,20 @@ describe('SessionStore lifecycle', () => {
 
     expect(store.getSession(session.sessionToken)).toBeNull();
     expect(store.sessionCount).toBe(0);
+  });
+
+  it('getTokenByPlayerId returns the token for a known playerId', () => {
+    const store = new SessionStore();
+    const session = store.createSession();
+
+    const token = store.getTokenByPlayerId(session.playerId);
+    expect(token).toBe(session.sessionToken);
+  });
+
+  it('getTokenByPlayerId returns null for an unknown playerId', () => {
+    const store = new SessionStore();
+    const unknownId = brand<PlayerId>('00000000-0000-4000-8000-000000000000');
+
+    expect(store.getTokenByPlayerId(unknownId)).toBeNull();
   });
 });
