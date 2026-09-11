@@ -181,22 +181,41 @@ npm --version
 npm install
 ```
 
+Copy the environment variables template (the defaults work for local development):
+
+```bash
+cp .env.example .env
+```
+
 ### Development
 
-Run the client:
+**1. Build the server** (required before starting — the dev server runs the compiled output):
+
+```bash
+npm run build:server
+```
+
+**2. Start the server** (in one terminal):
+
+```bash
+npm start
+```
+
+Or use file-watching mode so the server restarts automatically when you rebuild:
+
+```bash
+npm run dev:server
+```
+
+**3. Start the client** (in a second terminal):
 
 ```bash
 npm run dev:client
 ```
 
-The server can be built and started with:
+Vite starts on `http://localhost:3000` and proxies `/api` and `/ws` to the server on port `8080`.
 
-```bash
-npm run build:server
-npm start
-```
-
-The default server port is `8080`.
+> **Tip:** When you change server-side code, run `npm run build:server` again — `dev:server` watches the compiled output in `dist/`, not the TypeScript source directly.
 
 ### Run with Docker
 
